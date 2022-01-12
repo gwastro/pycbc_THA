@@ -418,13 +418,13 @@ delta_tc = Parameter("delta_tc", dtype=float,
                      label=r"$\Delta t_c~(\rm{s})$",
                      description="Coalesence time offset.")
 ra = Parameter("ra",
-                dtype=float, default=None, label=r"$\alpha$",
+                dtype=float, default=0., label=r"$\alpha$",
                 description="Right ascension (rad).")
 dec = Parameter("dec",
-                dtype=float, default=None, label=r"$\delta$",
+                dtype=float, default=0., label=r"$\delta$",
                 description="Declination (rad).")
 polarization = Parameter("polarization",
-                dtype=float, default=None, label=r"$\psi$",
+                dtype=float, default=0., label=r"$\psi$",
                 description="Polarization (rad).")
 redshift = Parameter("redshift",
                 dtype=float, default=None, label=r"$z$",
