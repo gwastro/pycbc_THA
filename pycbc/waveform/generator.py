@@ -31,6 +31,7 @@ from abc import (ABCMeta, abstractmethod)
 from six import add_metaclass
 
 from . import waveform
+from . import bbhx_waveform_plugin
 from .waveform import (FailedWaveformError)
 from . import ringdown
 from . import supernovae
@@ -1067,6 +1068,13 @@ class FDomainDetFrameModesGenerator(BaseFDomainDetFrameGenerator):
         """
         return select_waveform_modes_generator(approximant)
 
+# FIXME: For now this is hardcoded to a particular waveform, but there could
+#        be a more general generate_lisa_aet function with an approximant to
+#        generate different things
+class FDomainLISAAETGenerator(BaseCBCGenerator):
+    def __init__(self, variable_args=(), **frozen_params):
+        super().__init__(bbhx_waveform_plugin.BBHXWaveformFDInterface,
+                         variable_args=variable_args, **frozen_params)
 
 #
 # =============================================================================

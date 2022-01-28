@@ -319,7 +319,7 @@ class SingleCoincForGraceDB(object):
         """
         from ligo.gracedb.rest import GraceDb
         import matplotlib
-        matplotlib.use('Agg')
+        #matplotlib.use('Agg')
         import pylab as pl
 
         # first of all, make sure the event is saved on disk

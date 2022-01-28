@@ -18,7 +18,7 @@ from itertools import chain as it_chain, combinations as it_comb
 import numpy as np
 
 from matplotlib import use
-use('Agg')
+#use('Agg')
 from matplotlib import rcParams
 from matplotlib import pyplot as plt
 
