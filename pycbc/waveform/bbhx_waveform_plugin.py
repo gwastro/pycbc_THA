@@ -37,11 +37,18 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
     fill = True # See the BBHX documentation
     squeeze = True # See the BBHX documentation
     length = 1024 # An internal generation parameter, not an output parameter
-    shift_t_limits = True # Times are relative to merger
-    t_obs_start = pnutils.get_imr_duration(m1, m2, a1, a2, params['f_lower'],
-                                           approximant='IMRPhenomD')
-    t_obs_start = conversions.sec_to_year(t_obs_start)
-    t_obs_end = 1E-9
+
+    # FIXME: It would be good to generate the waveform from f_lower, but this
+    #        seems difficult to then line up merger times, without using an
+    #        expensive "roll" operation. Would like to resolve this, but for
+    #        now we just generate from t_0 with merger at the end. This will
+    #        result in some undesireable wraparound effects.
+    shift_t_limits = False # Times are relative to merger
+    #t_obs_start = pnutils.get_imr_duration(m1, m2, a1, a2, params['f_lower'],
+    #                                       approximant='IMRPhenomD')
+    #t_obs_start = conversions.sec_to_year(t_obs_start)
+    t_obs_start = conversions.sec_to_year(1. / params['delta_f'])
+    t_obs_end = 0.0 # Generates ringdown as well!
 
     wave = wave_gen(m1, m2, a1, a2,
                     dist, phi_ref, f_ref, inc, lam,
@@ -52,7 +59,8 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
                     shift_t_limits=shift_t_limits)[0]
 
     # Convert outputs to PyCBC arrays
-    return (FrequencySeries(wave[i], delta_f=params['delta_f'],
-                            epoch=params['tc']- 1/params['delta_f'])
-            for i in range(3))
+    output = [FrequencySeries(wave[i], delta_f=params['delta_f'],
+                              epoch=params['tc']- 1/params['delta_f'])
+              for i in range(3)]
+    return output
 

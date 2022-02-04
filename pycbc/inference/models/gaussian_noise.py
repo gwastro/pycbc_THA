@@ -817,8 +817,6 @@ class GaussianNoise(BaseGaussianNoise):
             high_frequency_cutoff=high_frequency_cutoff, normalize=normalize,
             static_params=static_params, **kwargs)
         # Determine if all data have the same sampling rate and segment length
-        self.waveform_generator = FDomainLISAAETGenerator(variable_args=(),
-                                                          **frozen_params)
         if self.all_ifodata_same_rate_length:
             # create a waveform generator for all ifos
             self.waveform_generator = create_waveform_generator(
@@ -1129,7 +1127,7 @@ def create_waveform_generator(
     except KeyError:
         raise ValueError("no approximant provided in the static args")
 
-    generator_function = generator_class.select_rframe_generator(approximant)
+    #generator_function = generator_class.select_rframe_generator(approximant)
     # get data parameters; we'll just use one of the data to get the
     # values, then check that all the others are the same
     delta_f = None
@@ -1143,7 +1141,8 @@ def create_waveform_generator(
                         d.start_time == start_time]):
                 raise ValueError("data must all have the same delta_t, "
                                  "delta_f, and start_time")
-    waveform_generator = FDomainLISAAETGenerator(variable_args=variable_params,
+    waveform_generator = generator.FDomainLISAAETGenerator(variable_args=variable_params,
+                                                 ifos=list(data.keys()),
                                                  delta_f=delta_f,
                                                  delta_t=delta_t,
                                                  epoch=start_time,

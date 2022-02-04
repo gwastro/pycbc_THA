@@ -1072,9 +1072,20 @@ class FDomainDetFrameModesGenerator(BaseFDomainDetFrameGenerator):
 #        be a more general generate_lisa_aet function with an approximant to
 #        generate different things
 class FDomainLISAAETGenerator(BaseCBCGenerator):
-    def __init__(self, variable_args=(), **frozen_params):
+    def __init__(self, ifos=(), variable_args=(), **frozen_params):
+        self.ifos = ifos
         super().__init__(bbhx_waveform_plugin.BBHXWaveformFDInterface,
                          variable_args=variable_args, **frozen_params)
+
+    def generate(self, **kwargs):
+        """Generates a waveform from the keyword args. The current params
+        are updated with the given kwargs, then the generator is called.
+        """
+        waveforms = super().generate(**kwargs)
+        allowed_names = ['LISA_A', 'LISA_E', 'LISA_T']
+        wav_dict = {allowed_names[i]:waveforms[i] for i in range(3)
+                    if allowed_names[i] in self.ifos}
+        return wav_dict
 
 #
 # =============================================================================
