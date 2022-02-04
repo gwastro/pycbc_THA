@@ -188,6 +188,7 @@ class MarginalizedPhaseGaussianNoise(GaussianNoise):
                     h[self._kmin[det]:kmax])
             # store
             setattr(self._current_stats, '{}_optimal_snrsq'.format(det), hh_i)
+            setattr(self._current_stats, '{}_mfltr_snrsq'.format(det), abs(hd_i))
             hh += hh_i
             hd += hd_i
         self._current_stats.maxl_phase = numpy.angle(hd)
