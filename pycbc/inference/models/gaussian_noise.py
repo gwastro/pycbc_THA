@@ -1141,11 +1141,11 @@ def create_waveform_generator(
                         d.start_time == start_time]):
                 raise ValueError("data must all have the same delta_t, "
                                  "delta_f, and start_time")
-    waveform_generator = generator.FDomainLISAAETGenerator(variable_args=variable_params,
+    waveform_generator = generator.FDomainLISAAETGenerator(epoch=start_time,
+                                                 variable_args=variable_params,
                                                  ifos=list(data.keys()),
                                                  delta_f=delta_f,
                                                  delta_t=delta_t,
-                                                 epoch=start_time,
                                                  **static_params)
 
     return waveform_generator

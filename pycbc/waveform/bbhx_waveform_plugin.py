@@ -30,7 +30,7 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
     lam = params['ra'] # Convention here almost certainly does not match.
     beta = params['dec'] # Convention here almost certainly does not match.
     psi = params['polarization'] # Convention here may not match.
-    t_ref = params['tc'] 
+    t_ref = 0 # FIXME: This does need to be set somehow!!
     freqs = np.arange(0, nyquist_freq, params['delta_f'])
     modes = [(2,2)] # More modes if not phenomd
     direct = False # See the BBHX documentation

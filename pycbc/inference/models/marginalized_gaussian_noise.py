@@ -126,7 +126,8 @@ class MarginalizedPhaseGaussianNoise(GaussianNoise):
         """Adds ``loglr``, plus ``cplx_loglr`` and ``optimal_snrsq`` in each
         detector."""
         return ['loglr', 'maxl_phase'] + \
-               ['{}_optimal_snrsq'.format(det) for det in self._data]
+               ['{}_optimal_snrsq'.format(det) for det in self._data] +\
+               ['{}_mfltr_snrsq'.format(det) for det in self._data]
 
     def _nowaveform_loglr(self):
         """Convenience function to set loglr values if no waveform generated.
@@ -137,6 +138,7 @@ class MarginalizedPhaseGaussianNoise(GaussianNoise):
         for det in self._data:
             # snr can't be < 0 by definition, so return 0
             setattr(self._current_stats, '{}_optimal_snrsq'.format(det), 0.)
+            setattr(self._current_stats, '{}_mfltr_snrsq'.format(det), 0.)
         return -numpy.inf
 
     def _loglr(self):
@@ -188,7 +190,7 @@ class MarginalizedPhaseGaussianNoise(GaussianNoise):
                     h[self._kmin[det]:kmax])
             # store
             setattr(self._current_stats, '{}_optimal_snrsq'.format(det), hh_i)
-            setattr(self._current_stats, '{}_mfltr_snrsq'.format(det), abs(hd_i))
+            setattr(self._current_stats, '{}_mfltr_snrsq'.format(det), abs(hd_i)/ (hh_i**0.5))
             hh += hh_i
             hd += hd_i
         self._current_stats.maxl_phase = numpy.angle(hd)

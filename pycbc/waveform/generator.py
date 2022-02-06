@@ -1072,10 +1072,19 @@ class FDomainDetFrameModesGenerator(BaseFDomainDetFrameGenerator):
 #        be a more general generate_lisa_aet function with an approximant to
 #        generate different things
 class FDomainLISAAETGenerator(BaseCBCGenerator):
-    def __init__(self, ifos=(), variable_args=(), **frozen_params):
+    def __init__(self, epoch, ifos=(), variable_args=(), **frozen_params):
         self.ifos = ifos
+        self.set_epoch(epoch)
         super().__init__(bbhx_waveform_plugin.BBHXWaveformFDInterface,
                          variable_args=variable_args, **frozen_params)
+
+    def set_epoch(self, epoch):
+        """Sets the epoch; epoch should be a float or a LIGOTimeGPS."""
+        self._epoch = float(epoch)
+
+    @property
+    def epoch(self):
+        return _lal.LIGOTimeGPS(self._epoch)
 
     def generate(self, **kwargs):
         """Generates a waveform from the keyword args. The current params
@@ -1083,6 +1092,12 @@ class FDomainLISAAETGenerator(BaseCBCGenerator):
         """
         waveforms = super().generate(**kwargs)
         allowed_names = ['LISA_A', 'LISA_E', 'LISA_T']
+        for i in range(3):
+            waveforms[i]._epoch = self._epoch
+            waveforms[i] = apply_fd_time_shift(waveforms[i],
+                                               self.current_params['tc'],
+                                               copy=False)
+
         wav_dict = {allowed_names[i]:waveforms[i] for i in range(3)
                     if allowed_names[i] in self.ifos}
         return wav_dict
