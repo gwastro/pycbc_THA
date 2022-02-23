@@ -7,7 +7,7 @@ from .parameters import location_params
 from bbhx.waveformbuild import BBHWaveformFD
 
 def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
-                            **params):
+                            sample_points=None, **params):
     # Some of this could go into waveform.py eventually.
     tmp_params = props(None, **params)
     params = location_params.default_dict().copy()
@@ -31,7 +31,10 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
     beta = params['dec'] # Convention here almost certainly does not match.
     psi = params['polarization'] # Convention here may not match.
     t_ref = 0 # FIXME: This does need to be set somehow!!
-    freqs = np.arange(0, nyquist_freq, params['delta_f'])
+    if sample_points is None:
+        freqs = np.arange(0, nyquist_freq, params['delta_f'])
+    else:
+        freqs = sample_points
     modes = [(2,2)] # More modes if not phenomd
     direct = False # See the BBHX documentation
     fill = True # See the BBHX documentation
@@ -59,8 +62,11 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
                     shift_t_limits=shift_t_limits)[0]
 
     # Convert outputs to PyCBC arrays
-    output = [FrequencySeries(wave[i], delta_f=params['delta_f'],
-                              epoch=params['tc']- 1/params['delta_f'])
-              for i in range(3)]
+    if sample_points is None:
+        output = [FrequencySeries(wave[i], delta_f=params['delta_f'],
+                                  epoch=params['tc']- 1/params['delta_f'])
+                  for i in range(3)]
+    else:
+        output = [Array(wave[i]) for i in range(3)]
     return output
 

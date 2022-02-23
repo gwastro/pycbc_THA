@@ -165,6 +165,9 @@ class Relative(BaseGaussianNoise):
 
         self.epsilon = float(epsilon)
 
+        # FIXME: This should be set properly in some way
+        self.is_lisa = True
+
         # reference waveform and bin edges
         self.h00, self.h00_sparse = {}, {}
         self.f, self.df, self.end_time, self.det = {}, {}, {}, {}
@@ -183,6 +186,9 @@ class Relative(BaseGaussianNoise):
         self.fid_params = self.static_params.copy()
         self.fid_params.update(fiducial_params)
 
+        if self.is_lisa:
+            self.init_tdi_wavs = {}
+
         for ifo in data:
             # store data and frequencies
             d0 = self.data[ifo]
@@ -192,13 +198,16 @@ class Relative(BaseGaussianNoise):
             self.det[ifo] = Detector(ifo)
 
             # get detector-specific arrival times relative to end of data
-            dt = self.det[ifo].time_delay_from_earth_center(
-                self.fid_params["ra"],
-                self.fid_params["dec"],
-                self.fid_params["tc"],
-            )
+            if self.is_lisa:
+                self.ta[ifo] = self.fid_params["tc"] - self.end_time[ifo]
+            else:
+                dt = self.det[ifo].time_delay_from_earth_center(
+                    self.fid_params["ra"],
+                    self.fid_params["dec"],
+                    self.fid_params["tc"],
+                )
 
-            self.ta[ifo] = self.fid_params["tc"] + dt - self.end_time[ifo]
+                self.ta[ifo] = self.fid_params["tc"] + dt - self.end_time[ifo]
 
             # generate fiducial waveform
             f_lo = self.kmin[ifo] * self.df[ifo]
@@ -213,12 +222,23 @@ class Relative(BaseGaussianNoise):
             # prune low frequency samples to avoid waveform errors
             fpoints = Array(self.f[ifo].astype(numpy.float64))
             fpoints = fpoints[self.kmin[ifo]:self.kmax[ifo]+1]
-            fid_hp, fid_hc = get_fd_waveform_sequence(sample_points=fpoints,
-                                                      **self.fid_params)
+            if self.is_lisa:
+                if ifo in self.init_tdi_wavs:
+                    curr_wav = self.init_tdi_wavs[ifo]
+                else:
+                    la, le, lt = get_fd_waveform_sequence(sample_points=fpoints,
+                                                          **self.fid_params)
+                    self.init_tdi_wavs['LISA_A'] = la
+                    self.init_tdi_wavs['LISA_E'] = le
+                    self.init_tdi_wavs['LISA_T'] = lt
+            else:
+                fid_hp, fid_hc = get_fd_waveform_sequence(sample_points=fpoints,
+                                                          **self.fid_params)
+                curr_wav = fid_hp
 
             # check for zeros at high frequencies
             # make sure only nonzero samples are included in bins
-            numzeros = list(fid_hp[::-1] != 0j).index(True)
+            numzeros = list(curr_wav[::-1] != 0j).index(True)
             if numzeros > 0:
                 new_kmax = self.kmax[ifo] - numzeros
                 f_hi = new_kmax * self.df[ifo]
@@ -228,17 +248,23 @@ class Relative(BaseGaussianNoise):
                     "will be %s Hz", f_hi)
 
             # make copy of fiducial wfs, adding back in low frequencies
-            fid_hp.resize(len(self.f[ifo]))
-            fid_hc.resize(len(self.f[ifo]))
-            hp0 = numpy.roll(fid_hp, self.kmin[ifo])
-            hc0 = numpy.roll(fid_hc, self.kmin[ifo])
+            if self.is_lisa:
+                curr_wav.resize(len(self.f[ifo]))
+                curr_wav = numpy.roll(curr_wav, self.kmin[ifo])
+                tshift = numpy.exp(-2.0j * numpy.pi * self.f[ifo] * self.ta[ifo])
+                self.h00[ifo] = numpy.array(curr_wav) * tshift
+            else:
+                fid_hp.resize(len(self.f[ifo]))
+                fid_hc.resize(len(self.f[ifo]))
+                hp0 = numpy.roll(fid_hp, self.kmin[ifo])
+                hc0 = numpy.roll(fid_hc, self.kmin[ifo])
 
-            fp, fc = self.det[ifo].antenna_pattern(
-                self.fid_params["ra"], self.fid_params["dec"],
-                self.fid_params["polarization"], self.fid_params["tc"])
+                fp, fc = self.det[ifo].antenna_pattern(
+                    self.fid_params["ra"], self.fid_params["dec"],
+                    self.fid_params["polarization"], self.fid_params["tc"])
 
-            tshift = numpy.exp(-2.0j * numpy.pi * self.f[ifo] * self.ta[ifo])
-            self.h00[ifo] = numpy.array(hp0 * fp + hc0 * fc) * tshift
+                tshift = numpy.exp(-2.0j * numpy.pi * self.f[ifo] * self.ta[ifo])
+                self.h00[ifo] = numpy.array(hp0 * fp + hc0 * fc) * tshift
 
             # compute frequency bins
             logging.info("Computing frequency bins")
@@ -355,13 +381,22 @@ class Relative(BaseGaussianNoise):
     def get_waveforms(self, params):
         """ Get the waveform polarizations for each ifo
         """
-        wfs = []
-        for edge in self.edge_unique:
-            hp, hc = get_fd_waveform_sequence(sample_points=edge, **params)
-            hp = hp.numpy()
-            hc = hc.numpy()
-            wfs.append((hp, hc))
-        return {ifo: wfs[self.ifo_map[ifo]] for ifo in self.data}
+        if self.is_lisa:
+            wf_ret = {}
+            la, le, lt = get_fd_waveform_sequence(sample_points=self.edge_unique[0],
+                                                  **params)
+            wf_ret['LISA_A'] = (la, la)
+            wf_ret['LISA_E'] = (le, le)
+            wf_ret['LISA_T'] = (lt, lt)
+        else:
+            wfs = []
+            for edge in self.edge_unique:
+                hp, hc = get_fd_waveform_sequence(sample_points=edge, **params)
+                hp = hp.numpy()
+                hc = hc.numpy()
+                wfs.append((hp, hc))
+            wf_ret = {ifo: wfs[self.ifo_map[ifo]] for ifo in self.data}
+        return wf_ret
 
     def _loglr(self):
         r"""Computes the log likelihood ratio,
@@ -397,9 +432,14 @@ class Relative(BaseGaussianNoise):
             times = self.antenna_time[ifo]
 
             # project waveform to detector frame
-            fp, fc = det.antenna_pattern(p["ra"], p["dec"],
-                                         p["polarization"], times)
-            dt = det.time_delay_from_earth_center(p["ra"], p["dec"], times)
+            # FIXME: Don't want to do this for LISA!!
+            if self.is_lisa:
+                fp, fc = (1, 0)
+                dt = 0
+            else:
+                fp, fc = det.antenna_pattern(p["ra"], p["dec"],
+                                             p["polarization"], times)
+                dt = det.time_delay_from_earth_center(p["ra"], p["dec"], times)
             dtc = p["tc"] + dt - end_time
 
             hdp, hhp = self.lik(freqs, fp, fc, dtc,

@@ -487,6 +487,12 @@ _lalsim_fd_sequence.required = parameters.cbc_fd_required
 for apx in _lalsim_enum:
     fd_sequence[apx] = _lalsim_fd_sequence
 
+try:
+    import .bbhx_waveform_plugin
+    fd_sequence['BBHX_PhenomD'] = bbhx_waveform_plugin.BBHXWaveformFDInterface
+except ImportError:
+    pass
+
 def get_fd_waveform_sequence(template=None, **kwds):
     """Return values of the waveform evaluated at the sequence of frequency
     points.
