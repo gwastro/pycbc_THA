@@ -1,5 +1,5 @@
 import numpy as np
-from pycbc.types import FrequencySeries
+from pycbc.types import FrequencySeries, Array
 from pycbc import pnutils, conversions
 from .waveform import props
 from .parameters import location_params
@@ -35,6 +35,8 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
         freqs = np.arange(0, nyquist_freq, params['delta_f'])
     else:
         freqs = sample_points
+        # FIXME: Must not hardcode this here!!
+        params['delta_f'] = 1E-8
     modes = [(2,2)] # More modes if not phenomd
     direct = False # See the BBHX documentation
     fill = True # See the BBHX documentation

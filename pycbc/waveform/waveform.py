@@ -488,7 +488,7 @@ for apx in _lalsim_enum:
     fd_sequence[apx] = _lalsim_fd_sequence
 
 try:
-    import .bbhx_waveform_plugin
+    from . import bbhx_waveform_plugin
     fd_sequence['BBHX_PhenomD'] = bbhx_waveform_plugin.BBHXWaveformFDInterface
 except ImportError:
     pass

@@ -195,12 +195,12 @@ class Relative(BaseGaussianNoise):
             self.f[ifo] = numpy.array(d0.sample_frequencies)
             self.df[ifo] = d0.delta_f
             self.end_time[ifo] = float(d0.end_time)
-            self.det[ifo] = Detector(ifo)
 
             # get detector-specific arrival times relative to end of data
             if self.is_lisa:
                 self.ta[ifo] = self.fid_params["tc"] - self.end_time[ifo]
             else:
+                self.det[ifo] = Detector(ifo)
                 dt = self.det[ifo].time_delay_from_earth_center(
                     self.fid_params["ra"],
                     self.fid_params["dec"],
@@ -223,14 +223,14 @@ class Relative(BaseGaussianNoise):
             fpoints = Array(self.f[ifo].astype(numpy.float64))
             fpoints = fpoints[self.kmin[ifo]:self.kmax[ifo]+1]
             if self.is_lisa:
-                if ifo in self.init_tdi_wavs:
-                    curr_wav = self.init_tdi_wavs[ifo]
-                else:
+                if ifo not in self.init_tdi_wavs:
                     la, le, lt = get_fd_waveform_sequence(sample_points=fpoints,
                                                           **self.fid_params)
                     self.init_tdi_wavs['LISA_A'] = la
                     self.init_tdi_wavs['LISA_E'] = le
                     self.init_tdi_wavs['LISA_T'] = lt
+                curr_wav = self.init_tdi_wavs[ifo]
+                   
             else:
                 fid_hp, fid_hc = get_fd_waveform_sequence(sample_points=fpoints,
                                                           **self.fid_params)
@@ -385,6 +385,9 @@ class Relative(BaseGaussianNoise):
             wf_ret = {}
             la, le, lt = get_fd_waveform_sequence(sample_points=self.edge_unique[0],
                                                   **params)
+            la = la.numpy()
+            le = le.numpy()
+            lt = lt.numpy()
             wf_ret['LISA_A'] = (la, la)
             wf_ret['LISA_E'] = (le, le)
             wf_ret['LISA_T'] = (lt, lt)
@@ -423,7 +426,6 @@ class Relative(BaseGaussianNoise):
         hd = 0j
         for ifo in self.data:
 
-            det = self.det[ifo]
             freqs = self.fedges[ifo]
             sdat = self.sdat[ifo]
             hp, hc = wfs[ifo]
@@ -437,6 +439,7 @@ class Relative(BaseGaussianNoise):
                 fp, fc = (1, 0)
                 dt = 0
             else:
+                det = self.det[ifo]
                 fp, fc = det.antenna_pattern(p["ra"], p["dec"],
                                              p["polarization"], times)
                 dt = det.time_delay_from_earth_center(p["ra"], p["dec"], times)
