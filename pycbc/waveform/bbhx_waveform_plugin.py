@@ -27,8 +27,8 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
     phi_ref = params['coa_phase']
     f_ref = 0 # This is now NOT standard LAL convention!
     inc = params['inclination'] # Convention here may not match. PLEASE CHECK!
-    lam = params['ra'] # Convention here almost certainly does not match.
-    beta = params['dec'] # Convention here almost certainly does not match.
+    lam = params['EclipticLongitude'] # Convention here almost certainly does not match.
+    beta = params['EclipticLatitude'] # Convention here almost certainly does not match.
     psi = params['polarization'] # Convention here may not match.
     t_ref = 0 # FIXME: This does need to be set somehow!!
     if sample_points is None:
