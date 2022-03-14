@@ -13,11 +13,10 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
     params = location_params.default_dict().copy()
     params.update(tmp_params)
 
-
     # FIXME: I need to take an "epoch" and/or tc argument somehow??
 
     # Is it slow to do this every time?? Does it need caching??
-    wave_gen = BBHWaveformFD(amp_phase_kwargs=dict(run_phenomd=run_phenomd)) 
+    wave_gen = BBHWaveformFD(amp_phase_kwargs=dict(run_phenomd=run_phenomd))
 
     m1 = params['mass1']
     m2 = params['mass2']
@@ -27,8 +26,8 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
     phi_ref = params['coa_phase']
     f_ref = 0 # This is now NOT standard LAL convention!
     inc = params['inclination'] # Convention here may not match. PLEASE CHECK!
-    lam = params['EclipticLongitude'] # Convention here almost certainly does not match.
-    beta = params['EclipticLatitude'] # Convention here almost certainly does not match.
+    lam = params['eclipticlongitude'] # Convention here almost certainly does not match.
+    beta = params['eclipticlatitude'] # Convention here almost certainly does not match.
     psi = params['polarization'] # Convention here may not match.
     t_ref = 0 # FIXME: This does need to be set somehow!!
     if sample_points is None:
