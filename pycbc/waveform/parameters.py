@@ -26,6 +26,8 @@
 """
 
 from collections import OrderedDict
+
+from numpy import dtype
 try:
     from collections import UserList
 except ImportError:
@@ -432,6 +434,12 @@ redshift = Parameter("redshift",
 comoving_volume = Parameter("comoving_volume", dtype=float,
                             label=r"$V_C~(\rm{Mpc}^3)$",
                             description="Comoving volume (in cubic Mpc).")
+eclipticlatitude = Parameter("eclipticlatitude",
+                dtype=float, default=0., label="r$\beta$",
+                description="eclipticlatitude wrt SSB coords.")
+eclipticlongitude = Parameter("eclipticlongitude",
+                dtype=float, default=0., label="r$\lamda$",
+                description="eclipticlongitude wrt SSB coords.")
 
 #
 #   Calibration parameters
@@ -547,7 +555,8 @@ dbeta3 = Parameter("dbeta3",
 # passed to the waveform generators in lalsimulation, but are instead applied
 # after a waveform is generated. Distance, however, is a parameter used by
 # the waveform generators.
-location_params = ParameterList([tc, ra, dec, polarization])
+location_params = ParameterList([tc, ra, dec, polarization,
+                        eclipticlatitude, eclipticlongitude])
 
 # parameters describing the orientation of a binary w.r.t. the radiation
 # frame. Note: we include distance here, as it is typically used for generating
