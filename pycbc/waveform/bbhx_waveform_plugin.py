@@ -58,9 +58,9 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
                     dist, phi_ref, f_ref, inc, lam,
                     beta, psi, t_ref, freqs=freqs,
                     modes=modes, direct=direct, fill=fill, squeeze=squeeze,
-                    length=length)[0] #t_obs_start=t_obs_start,
-                    #t_obs_end=t_obs_end,
-                    #shift_t_limits=shift_t_limits)[0]
+                    length=length,t_obs_start=t_obs_start,
+                    t_obs_end=t_obs_end,
+                    shift_t_limits=shift_t_limits)[0]
 
     # Convert outputs to PyCBC arrays
     if sample_points is None:
