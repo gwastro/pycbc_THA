@@ -29,7 +29,7 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
     lam = params['eclipticlongitude'] # Convention here almost certainly does not match.
     beta = params['eclipticlatitude'] # Convention here almost certainly does not match.
     psi = params['polarization'] # Convention here may not match.
-    t_ref = 0 # FIXME: This does need to be set somehow!!
+    t_ref = params['tc'] # FIXME: This does need to be set somehow!!
     if sample_points is None:
         freqs = np.arange(0, nyquist_freq, params['delta_f'])
     else:
@@ -58,7 +58,7 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
                     dist, phi_ref, f_ref, inc, lam,
                     beta, psi, t_ref, freqs=freqs,
                     modes=modes, direct=direct, fill=fill, squeeze=squeeze,
-                    length=length, t_obs_start=t_obs_start,
+                    length=length,t_obs_start=t_obs_start,
                     t_obs_end=t_obs_end,
                     shift_t_limits=shift_t_limits)[0]
 
