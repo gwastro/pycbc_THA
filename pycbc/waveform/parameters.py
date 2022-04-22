@@ -435,10 +435,10 @@ comoving_volume = Parameter("comoving_volume", dtype=float,
                             label=r"$V_C~(\rm{Mpc}^3)$",
                             description="Comoving volume (in cubic Mpc).")
 eclipticlatitude = Parameter("eclipticlatitude",
-                dtype=float, default=0., label="r$\beta$",
+                dtype=float, default=0., label=r"$\beta$",
                 description="eclipticlatitude wrt SSB coords.")
 eclipticlongitude = Parameter("eclipticlongitude",
-                dtype=float, default=0., label="r$\lamda$",
+                dtype=float, default=0., label=r"$\lambda$",
                 description="eclipticlongitude wrt SSB coords.")
 
 #
