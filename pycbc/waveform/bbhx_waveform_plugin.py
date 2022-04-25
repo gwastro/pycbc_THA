@@ -13,8 +13,6 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
     params = location_params.default_dict().copy()
     params.update(tmp_params)
 
-    # FIXME: I need to take an "epoch" and/or tc argument somehow??
-
     # Is it slow to do this every time?? Does it need caching??
     wave_gen = BBHWaveformFD(amp_phase_kwargs=dict(run_phenomd=run_phenomd))
 
@@ -25,11 +23,11 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
     dist = pnutils.megaparsecs_to_meters(params['distance'])
     phi_ref = params['coa_phase']
     f_ref = 0 # This is now NOT standard LAL convention!
-    inc = params['inclination'] # Convention here may not match. PLEASE CHECK!
-    lam = params['eclipticlongitude'] # Convention here almost certainly does not match.
-    beta = params['eclipticlatitude'] # Convention here almost certainly does not match.
-    psi = params['polarization'] # Convention here may not match.
-    t_ref = params['tc'] # FIXME: This does need to be set somehow!!
+    inc = params['inclination']
+    lam = params['eclipticlongitude']
+    beta = params['eclipticlatitude']
+    psi = params['polarization']
+    t_ref = params['tc']
     if sample_points is None:
         freqs = np.arange(0, nyquist_freq, params['delta_f'])
     else:
@@ -42,16 +40,8 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
     squeeze = True # See the BBHX documentation
     length = 1024 # An internal generation parameter, not an output parameter
 
-    # FIXME: It would be good to generate the waveform from f_lower, but this
-    #        seems difficult to then line up merger times, without using an
-    #        expensive "roll" operation. Would like to resolve this, but for
-    #        now we just generate from t_0 with merger at the end. This will
-    #        result in some undesireable wraparound effects.
     shift_t_limits = False # Times are relative to merger
-    #t_obs_start = pnutils.get_imr_duration(m1, m2, a1, a2, params['f_lower'],
-    #                                       approximant='IMRPhenomD')
-    #t_obs_start = conversions.sec_to_year(t_obs_start)
-    t_obs_start = conversions.sec_to_year(1. / params['delta_f'])
+    t_obs_start = 0.9*conversions.sec_to_year(1. / params['delta_f'])
     t_obs_end = 0.0 # Generates ringdown as well!
 
     wave = wave_gen(m1, m2, a1, a2,
@@ -64,8 +54,16 @@ def BBHXWaveformFDInterface(run_phenomd=True, nyquist_freq=0.1,
 
     # Convert outputs to PyCBC arrays
     if sample_points is None:
+        # If wave[i] was converted to the time-domain, where would the
+        # merger be within the timeseries (at end? at start?). This is a weird
+        # convention in BBHX, and is not trivial!
+        # FIXME: This has not been tested for relative_binning, and
+        # may not (probably won't) work there!
+        length_of_wave = 1. / params['delta_f']
+        # I don't know why this is what it is.
+        loc_of_signal_merger_within_wave = t_ref % length_of_wave
         output = [FrequencySeries(wave[i], delta_f=params['delta_f'],
-                                  epoch=params['tc']- 1/params['delta_f'])
+                                  epoch=params['tc'] - loc_of_signal_merger_within_wave)
                   for i in range(3)]
     else:
         output = [Array(wave[i]) for i in range(3)]

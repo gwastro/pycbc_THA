@@ -198,7 +198,7 @@ class Relative(BaseGaussianNoise):
 
             # get detector-specific arrival times relative to end of data
             if self.is_lisa:
-                self.ta[ifo] = self.fid_params["tc"] - self.end_time[ifo]
+                self.ta[ifo] = -self.end_time[ifo]
             else:
                 self.det[ifo] = Detector(ifo)
                 dt = self.det[ifo].time_delay_from_earth_center(
@@ -438,12 +438,13 @@ class Relative(BaseGaussianNoise):
             if self.is_lisa:
                 fp, fc = (1, 0)
                 dt = 0
+                dtc = -end_time
             else:
                 det = self.det[ifo]
                 fp, fc = det.antenna_pattern(p["ra"], p["dec"],
                                              p["polarization"], times)
                 dt = det.time_delay_from_earth_center(p["ra"], p["dec"], times)
-            dtc = p["tc"] + dt - end_time
+                dtc = p["tc"] + dt - end_time
 
             hdp, hhp = self.lik(freqs, fp, fc, dtc,
                                 hp, hc, h00,

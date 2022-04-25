@@ -1093,9 +1093,11 @@ class FDomainLISAAETGenerator(BaseCBCGenerator):
         waveforms = super().generate(**kwargs)
         allowed_names = ['LISA_A', 'LISA_E', 'LISA_T']
         for i in range(3):
+            old_epoch = waveforms[i]._epoch
+            tc_within_data = self.current_params['tc'] - old_epoch
             waveforms[i]._epoch = self._epoch
             waveforms[i] = apply_fd_time_shift(waveforms[i],
-                                               self.current_params['tc'],
+                                               self.current_params['tc']-tc_within_data,
                                                copy=False)
 
         wav_dict = {allowed_names[i]:waveforms[i] for i in range(3)
