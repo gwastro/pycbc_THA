@@ -31,20 +31,23 @@ ctypedef fused COMPLEXTYPE:
     float complex
     double complex
 
-def _batch_correlate(numpy.ndarray [long, ndim=1] x,
-                     numpy.ndarray [float complex, ndim=1] y,
-                     numpy.ndarray [long, ndim=1] z,
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def _batch_correlate(long[:] x,
+                     COMPLEXTYPE[:] y,
+                     long[:] z,
                      size, num_vectors):
     cdef unsigned int nvec = num_vectors
     cdef unsigned int vsize = size
+    cdef unsigned int i,j
 
-    cdef float complex* xp
-    cdef float complex* zp
+    cdef COMPLEXTYPE* xp
+    cdef COMPLEXTYPE* zp
 
     for i in range(nvec):
-        xp = <float complex*> x[i]
-        zp = <float complex*> z[i]
-        for j in range(vsize):
+        xp = <COMPLEXTYPE*> x[i]
+        zp = <COMPLEXTYPE*> z[i]
+        for j in prange(vsize, nogil=True):
             zp[j] = xp[j].conjugate() * y[j]
 
 def batch_correlate_execute(self, y):
