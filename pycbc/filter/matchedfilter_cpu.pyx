@@ -44,10 +44,10 @@ def _batch_correlate(long[:] x,
     cdef COMPLEXTYPE* xp
     cdef COMPLEXTYPE* zp
 
-    for i in range(nvec):
+    for i in prange(nvec, nogil=True):
         xp = <COMPLEXTYPE*> x[i]
         zp = <COMPLEXTYPE*> z[i]
-        for j in prange(vsize, nogil=True):
+        for j in prange(vsize):
             zp[j] = xp[j].conjugate() * y[j]
 
 def batch_correlate_execute(self, y):
