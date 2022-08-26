@@ -577,8 +577,8 @@ class MultiRingBuffer(object):
             curr_pos = self.valid_ends[i]
             # Expand ring buffer size if needed
             if self.valid_ends[i] == len(self.buffer[i]):
-                self.buffer[i].resize(len(self.buffer[i]) * 2)
-                self.buffer_expire[i].resize(len(self.buffer[i]) * 2)
+                self.buffer[i] = numpy.resize(self.buffer[i], len(self.buffer[i]) * 2)
+                self.buffer_expire[i] = numpy.resize(self.buffer_expire[i], len(self.buffer[i]) * 2)
             self.buffer[i][curr_pos] = v
             self.buffer_expire[i][curr_pos] = self.time
             self.valid_ends[i] = self.valid_ends[i] + 1
@@ -687,8 +687,8 @@ class CoincExpireBuffer(object):
         if self.index + len(values) >= len(self.buffer):
             newlen = len(self.buffer) * 2
             for ifo in self.ifos:
-                self.timer[ifo].resize(newlen)
-            self.buffer.resize(newlen, refcheck=False)
+                self.timer[ifo] = numpy.resize(self.timer[ifo], newlen)
+            self.buffer = numpy.resize(self.buffer, newlen)
 
         self.buffer[self.index:self.index+len(values)] = values
         if len(values) > 0:
