@@ -2,6 +2,7 @@ import numpy as np
 cimport numpy as cnp
 from cython import wraparound, boundscheck, cdivision
 from libc.math cimport M_PI, sqrt
+from libc.math cimport round as cround
 
 
 ctypedef fused REALTYPE:
@@ -131,3 +132,61 @@ def coincbuffer_expireelements(
             keep_count += 1
 
     return keep_count
+
+@boundscheck(False)
+@wraparound(False)
+@cdivision(True)
+def timecoincidence_constructidx2(
+    unsigned int[:] idx2,
+    long int[:] sort2,
+    long int[:] left,
+    long int[:] right,
+    int length,
+):
+    cdef:
+        int idx, jdx, count
+
+    count = 0
+    for idx in range(length):
+        for jdx in range(left[idx],right[idx]):
+            idx2[count] = sort2[jdx]
+
+@boundscheck(False)
+@wraparound(False)
+@cdivision(True)
+def timecoincidence_constructfold(
+    double[:] fold1,
+    double[:] fold2,
+    double[:] t1,
+    double[:] t2,
+    double slide_step,
+    int length1,
+    int length2
+):
+    cdef:
+        int idx
+
+    for idx in range(length1):
+        fold1[idx] = t1[idx] % slide_step
+
+    for idx in range(length2):
+        fold2[idx] = t2[idx] % slide_step
+
+@boundscheck(False)
+@wraparound(False)
+@cdivision(True)
+def timecoincidence_getslideint(
+    int [:] slide,
+    double[:] t1,
+    double[:] t2,
+    unsigned int[:] idx1,
+    unsigned int[:] idx2,
+    double slide_step,
+    int length
+):
+    cdef:
+        idx
+
+    for idx in range(length):
+        diff = (t1[idx1[idx]] / slide_step) - (t2[idx2[idx]] / slide_step) 
+        slide[idx] = <int>(cround(diff))
