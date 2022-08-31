@@ -601,7 +601,7 @@ class MultiRingBuffer(object):
     def expire_vector(self, buffer_index):
         """Return the expiration vector of a given ring buffer """
 
-        return self.buffer_expire[buffer_index][valid_slice(buffer_index)]
+        return self.buffer_expire[buffer_index][self.valid_slice(buffer_index)]
 
     def data(self, buffer_index):
         """Return the data vector for a given ring buffer"""
@@ -623,7 +623,7 @@ class MultiRingBuffer(object):
             self.valid_ends[buffer_index] -= val_start
             self.valid_starts[buffer_index] = 0
 
-        return self.buffer[buffer_index][valid_slice(buffer_index)]
+        return self.buffer[buffer_index][self.valid_slice(buffer_index)]
 
 
 class CoincExpireBuffer(object):
@@ -708,14 +708,29 @@ class CoincExpireBuffer(object):
             self.index += len(values)
 
         # Remove the expired old elements
-        for ifo in ifos:
+        if len(ifos) == 2:
+            # Cython version for two ifo case
             self.index = coincbuffer_expireelements(
                 self.buffer,
-                self.timer[ifo],
-                self.time[ifo],
+                self.timer[ifos[0]],
+                self.timer[ifos[1]],
+                self.time[ifos[0]],
+                self.time[ifos[1]],
                 self.expiration,
                 self.index
             )
+        else:
+            # Numpy version for >2 ifo case
+            keep = None
+            for ifo in ifos:
+                kt = self.timer[ifo][:self.index] >= self.time[ifo] - self.expiration
+                keep = numpy.logical_and(keep, kt) if keep is not None else kt
+
+            self.buffer[:keep.sum()] = self.buffer[:self.index][keep]
+            for ifo in self.ifos:
+                self.timer[ifo][:keep.sum()] = self.timer[ifo][:self.index][keep]
+            self.index = keep.sum()
+
 
     def num_greater(self, value):
         """Return the number of elements larger than 'value'"""
