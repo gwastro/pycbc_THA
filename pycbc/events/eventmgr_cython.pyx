@@ -126,30 +126,12 @@ def coincbuffer_expireelements(
 
     keep_count = 0
     for idx in range(length):
-        if timer[idx] > time - expiration:
+        if timer[idx] >= time - expiration:
             cbuffer[keep_count] = cbuffer[idx]
             timer[keep_count] = timer[idx]
             keep_count += 1
 
     return keep_count
-
-@boundscheck(False)
-@wraparound(False)
-@cdivision(True)
-def timecoincidence_constructidx2(
-    unsigned int[:] idx2,
-    long int[:] sort2,
-    long int[:] left,
-    long int[:] right,
-    int length,
-):
-    cdef:
-        int idx, jdx, count
-
-    count = 0
-    for idx in range(length):
-        for jdx in range(left[idx],right[idx]):
-            idx2[count] = sort2[jdx]
 
 @boundscheck(False)
 @wraparound(False)
@@ -175,18 +157,66 @@ def timecoincidence_constructfold(
 @boundscheck(False)
 @wraparound(False)
 @cdivision(True)
+def timecoincidence_findidxlen(
+    long int[:] left,
+    long int[:] right,
+    int leftlength,
+):
+    cdef:
+        int idx, tslength
+
+    tslength = 0
+    for idx in range(leftlength):
+        tslength += right[idx] - left[idx]
+    return tslength
+
+@boundscheck(False)
+@wraparound(False)
+@cdivision(True)
+def timecoincidence_constructidxs(
+    unsigned int[:] idx1,
+    unsigned int[:] idx2,
+    long int[:] sort1,
+    long int[:] sort2,
+    long int[:] left,
+    long int[:] right,
+    int leftlength,
+    int sort2length
+):
+    cdef:
+        int idx, jdx, count, currlen
+
+    # Construct sort1
+    count = 0
+    for idx in range(leftlength):
+        currlen = right[idx] - left[idx]
+        for jdx in range(currlen):
+            idx1[count] = sort1[idx]
+            count += 1
+
+    # Construct sort2
+    count = 0
+    for idx in range(leftlength):
+        for jdx in range(left[idx], right[idx]):
+            idx2[count] = sort2[jdx % sort2length]
+            count += 1
+
+@boundscheck(False)
+@wraparound(False)
+@cdivision(True)
 def timecoincidence_getslideint(
     int [:] slide,
     double[:] t1,
     double[:] t2,
     unsigned int[:] idx1,
     unsigned int[:] idx2,
-    double slide_step,
-    int length
+    double slide_step
 ):
     cdef:
-        idx
+        int idx, length
+
+    length = idx1.shape[0]
 
     for idx in range(length):
-        diff = (t1[idx1[idx]] / slide_step) - (t2[idx2[idx]] / slide_step) 
+        diff = (t1[idx1[idx]] / slide_step) - (t2[idx2[idx]] / slide_step)
         slide[idx] = <int>(cround(diff))
