@@ -1074,7 +1074,7 @@ class LiveCoincTimeslideBackgroundEstimator(object):
                     sngls_list,
                     slide,
                     self.timeslide_interval,
-                    [0, -1]
+                    to_shift
                 )
                 offsets.append(slide)
                 cstat.append(c)
