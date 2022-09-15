@@ -143,6 +143,25 @@ def coincbuffer_expireelements(
 
     return keep_count
 
+
+@boundscheck(False)
+@wraparound(False)
+@cdivision(True)
+def coincbuffer_numgreater(
+    float[:] cbuffer,
+    int length,
+    float value
+):
+    cdef:
+        int idx, count
+
+    count = 0
+    for idx in range(length):
+        if cbuffer[idx] > value:
+            count += 1
+    return count
+
+
 @boundscheck(False)
 @wraparound(False)
 @cdivision(True)
