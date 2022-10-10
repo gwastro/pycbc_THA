@@ -26,6 +26,7 @@ a relative binning likelihood for parameter estimation.
 """
 
 
+import math
 import logging
 import numpy
 import itertools
@@ -468,15 +469,18 @@ class Relative(DistMarg, BaseGaussianNoise):
         float
             The value of the log likelihood ratio.
         """
-        # get model params
-        p = self.current_params.copy()
-        p.update(self.static_params)
-        wfs = self.get_waveforms(p)
+        total_lik = []
+        for i in range(16):
+          # get model params
+          p = self.current_params.copy()
+          p.update(self.static_params)
+          p['symmetrynum'] = i
+          wfs = self.get_waveforms(p)
 
-        norm = 0.0
-        filt = 0j
-        self._current_wf_parts = {}
-        for ifo in self.data:
+          norm = 0.0
+          filt = 0j
+          self._current_wf_parts = {}
+          for ifo in self.data:
 
             freqs = self.fedges[ifo]
             sdat = self.sdat[ifo]
@@ -508,7 +512,10 @@ class Relative(DistMarg, BaseGaussianNoise):
                 self._current_wf_parts[ifo] = (fp, fc, dtc, hp, hc, h00)
             filt += filter_i
             norm += norm_i
-        return self.marginalize_loglr(filt, norm)
+          total_lik.append(self.marginalize_loglr(filt, norm))
+        max_lik = max(total_lik)
+        lik_sum = sum([math.exp(lik - max_lik) for lik in total_lik])
+        return max_lik + math.log(lik_sum/16.)
 
     def write_metadata(self, fp, group=None):
         """Adds writing the fiducial parameters and epsilon to file's attrs.
