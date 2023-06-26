@@ -217,7 +217,7 @@ def add_osg_site(sitecat, cp):
                       value="(HAS_SINGULARITY =?= TRUE) && "
                             "(HAS_LIGO_FRAMES =?= True) && "
                             "(IS_GLIDEIN =?= True)")
-    cvmfs_loc = '"/cvmfs/singularity.opensciencegrid.org/pycbc/pycbc-el8:v'
+    cvmfs_loc = '"docker://spxiwh/pycbc:tha-docker-tmp"'
     cvmfs_loc += last_release + '"'
     site.add_profiles(Namespace.CONDOR, key="+SingularityImage",
                       value=cvmfs_loc)
