@@ -218,7 +218,6 @@ def add_osg_site(sitecat, cp):
                             "(HAS_LIGO_FRAMES =?= True) && "
                             "(IS_GLIDEIN =?= True)")
     cvmfs_loc = '"docker://spxiwh/pycbc:tha-docker-tmp"'
-    cvmfs_loc += last_release + '"'
     site.add_profiles(Namespace.CONDOR, key="+SingularityImage",
                       value=cvmfs_loc)
     # On OSG failure rate is high
