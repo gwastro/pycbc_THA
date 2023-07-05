@@ -55,6 +55,8 @@ def get_psd(input_tuple):
     try:
         gwstrain = pycbc.strain.from_cli(argstmp, pycbc.DYN_RANGE_FAC)
     except RuntimeError:
+        import pycbc.frame.frame
+        pycbc.frame.frame._cached_lal_cache_from_frame.clear_cache()
         time.sleep(10)
         return get_psd((seg, i))
 
