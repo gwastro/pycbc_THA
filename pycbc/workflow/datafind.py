@@ -744,30 +744,20 @@ def convert_cachelist_to_filelist(datafindcache_list):
                 prev_file = currFile
 
             # Populate the PFNs for the File() we just created
-            if frame.url.startswith('file://'):
+            cvmfs_urls = ('file:///cvmfs/', 'osdf://')
+            if frame.url.startswith(cvmfs_urls):
+                # Frame is on CVMFS/OSDF, so let all sites read it directly.
+                currFile.add_pfn(frame.url, site='all')
+            elif frame.url.startswith('file://'):
+                # Frame not on CVMFS, so may need transferring.
+                # Be careful here! If all your frames files are on site
+                # = local and you try to run on OSG, it will likely
+                # overwhelm the condor file transfer process!
                 currFile.add_pfn(frame.url, site='local')
-                if frame.url.startswith(
-                    'file:///cvmfs/oasis.opensciencegrid.org/ligo/frames'):
-                    # Datafind returned a URL valid on the osg as well
-                    # so add the additional PFNs to allow OSG access.
-                    currFile.add_pfn(frame.url, site='osg')
-                    currFile.add_pfn(frame.url.replace(
-                        'file:///cvmfs/oasis.opensciencegrid.org/',
-                        'root://xrootd-local.unl.edu/user/'), site='osg')
-                    currFile.add_pfn(frame.url.replace(
-                        'file:///cvmfs/oasis.opensciencegrid.org/',
-                        'gsiftp://red-gridftp.unl.edu/user/'), site='osg')
-                    currFile.add_pfn(frame.url.replace(
-                        'file:///cvmfs/oasis.opensciencegrid.org/',
-                        'gsiftp://ldas-grid.ligo.caltech.edu/hdfs/'), site='osg')
-                elif frame.url.startswith(
-                    'file:///cvmfs/gwosc.osgstorage.org/'):
-                    # Datafind returned a URL valid on the osg as well
-                    # so add the additional PFNs to allow OSG access.
-                    for s in ['osg', 'orangegrid', 'osgconnect']:
-                        currFile.add_pfn(frame.url, site=s)
-                        currFile.add_pfn(frame.url, site="{}-scratch".format(s))
             else:
+                # Frame is at some unknown URL. Pegasus will decide how to deal
+                # with this, but will likely transfer to local site first, and
+                # from there transfer to remote sites as needed.
                 currFile.add_pfn(frame.url, site='notlocal')
 
     return datafind_filelist
