@@ -211,15 +211,16 @@ def add_osg_site(sitecat, cp):
                       value="False")
     site.add_profiles(Namespace.CONDOR, key="+SingularityCleanEnv",
                       value="True")
-    site.add_profiles(Namespace.CONDOR, key="use_x509userproxy",
-                      value="True")
+    site.add_profiles(Namespace.CONDOR, key="universe", value='vanilla')
     site.add_profiles(Namespace.CONDOR, key="Requirements",
                       value="(HAS_SINGULARITY =?= TRUE) && "
                             "(HAS_LIGO_FRAMES =?= True) && "
                             "(IS_GLIDEIN =?= True)")
-    cvmfs_loc = '"docker://spxiwh/pycbc:tha-docker-tmp"'
+    cvmfs_loc = '"./ian_harry_thaprecessing_image_v_0_0_1.sif"'
     site.add_profiles(Namespace.CONDOR, key="+SingularityImage",
                       value=cvmfs_loc)
+    site.add_profiles(Namespace.CONDOR, key='transfer_input_files',
+                      value='igwn+osdf:///igwn/cit/staging/ian.harry/tha_prec_project/ian_harry_thaprecessing_image_v_0_0_1.sif')
     # On OSG failure rate is high
     site.add_profiles(Namespace.DAGMAN, key="retry", value="4")
     site.add_profiles(Namespace.ENV, key="LAL_DATA_PATH",
