@@ -24,54 +24,50 @@
 # =============================================================================
 #
 """
-Module to generate PSD figures
+Module to generate SNR figures
 """
+import pylab as pl
 from pycbc.results import ifo_color
-from pycbc import DYN_RANGE_FAC
 
 
-def generate_asd_plot(psddict, output_filename, f_min=10.):
+def generate_snr_plot(snrdict, output_filename, triggers, ref_time):
     """
-    Generate an ASD plot as used for upload to GraceDB.
+    Generate an SNR timeseries plot as used for upload to GraceDB.
 
     Parameters
     ----------
-    psddict: dictionary
-        A dictionary keyed on ifo containing the PSDs as
-        FrequencySeries objects
 
+    snrdict: dictionary
+        A dictionary keyed on ifo containing the SNR
+        TimeSeries objects
     output_filename: string
         The filename for the plot to be saved to
-
-    f_min: float
-        Minimum frequency at which anything should be plotted
+    triggers : dictionary of tuples
+        A dictionary keyed on IFO, containing (trigger time, trigger snr)
+    ref_time : number, GPS seconds
+        Reference time which will be used as the zero point of the plot
+        This should be an integer value, but doesn't need to be an integer
 
     Returns
     -------
         None
     """
-    from matplotlib import pyplot as plt
-    asd_fig, asd_ax = plt.subplots(1)
-    asd_min = [1E-24]  # Default minimum to plot
+    pl.figure()
+    ref_time = int(ref_time)
+    for ifo in sorted(snrdict):
+        curr_snrs = snrdict[ifo]
 
-    for ifo in sorted(psddict.keys()):
-        curr_psd = psddict[ifo]
-        freqs = curr_psd.sample_frequencies
-        physical = (freqs >= f_min)  # Ignore lower frequencies
-        asd_to_plot = curr_psd[physical] ** 0.5 / DYN_RANGE_FAC
-        asd_min.append(min(asd_to_plot))
-        asd_ax.loglog(freqs[physical],
-                      asd_to_plot,
-                      c=ifo_color(ifo),
-                      label=ifo)
+        pl.plot(curr_snrs.sample_times - ref_time, abs(curr_snrs),
+                c=ifo_color(ifo), label=ifo)
+        if ifo in triggers:
+            pl.plot(triggers[ifo][0] - ref_time,
+                    triggers[ifo][1], marker='x', c=ifo_color(ifo))
 
-    asd_ax.grid(True)
-    asd_ax.legend()
-    asd_ax.set_xlim([f_min, 1300])
-    asd_ax.set_ylim([min(asd_min), 1E-20])
-    asd_ax.set_xlabel('Frequency (Hz)')
-    asd_ax.set_ylabel('ASD')
-    asd_fig.savefig(output_filename)
+    pl.legend()
+    pl.xlabel(f'GPS time from {ref_time:d} (s)')
+    pl.ylabel('SNR')
+    pl.savefig(output_filename)
+    pl.close()
 
 
-__all__ = ["generate_asd_plot"]
+__all__ = ["generate_snr_plot"]

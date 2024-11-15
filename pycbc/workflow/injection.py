@@ -32,12 +32,13 @@ https://ldas-jobs.ligo.caltech.edu/~cbc/docs/pycbc/NOTYETCREATED.html
 import logging
 import os.path
 import configparser as ConfigParser
+
 from pycbc.workflow.core import FileList, make_analysis_dir, Node
 from pycbc.workflow.core import Executable, resolve_url_to_file
 from pycbc.workflow.jobsetup import (LalappsInspinjExecutable,
-        LigolwCBCJitterSkylocExecutable, LigolwCBCAlignTotalSpinExecutable,
-        PycbcDarkVsBrightInjectionsExecutable, select_generic_executable,
-        PycbcCreateInjectionsExecutable)
+        PycbcCreateInjectionsExecutable, select_generic_executable)
+
+logger = logging.getLogger('pycbc.workflow.injection')
 
 def veto_injections(workflow, inj_file, veto_file, veto_name, out_dir, tags=None):
     tags = [] if tags is None else tags
@@ -92,7 +93,7 @@ def compute_inj_optimal_snr(workflow, inj_file, precalc_psd_files, out_dir,
                                               'parallelization-factor',
                                               tags))
     except Exception as e:
-        logging.warning(e)
+        logger.warning(e)
         factor = 1
 
     if factor == 1:
@@ -149,12 +150,10 @@ def cut_distant_injections(workflow, inj_file, out_dir, tags=None):
     return node.output_files[0]
 
 def inj_to_hdf(workflow, inj_file, out_dir, tags=None):
-    """ Convert injection file to hdf format if not already one
-    """
-    _, ext = os.path.splitext(inj_file.name)
-    if ext == '.hdf':
-        return inj_file
+    """ Convert injection file to hdf format.
 
+    If the file is already PyCBC HDF format, this will just make a copy.
+    """
     if tags is None:
         tags = []
 
@@ -166,8 +165,7 @@ def inj_to_hdf(workflow, inj_file, out_dir, tags=None):
     return node.output_file
 
 def setup_injection_workflow(workflow, output_dir=None,
-                             inj_section_name='injections', exttrig_file=None,
-                             tags =None):
+                             inj_section_name='injections', tags=None):
     """
     This function is the gateway for setting up injection-generation jobs in a
     workflow. It should be possible for this function to support a number
@@ -201,12 +199,11 @@ def setup_injection_workflow(workflow, output_dir=None,
     """
     if tags is None:
         tags = []
-    logging.info("Entering injection module.")
+    logger.info("Entering injection module.")
     make_analysis_dir(output_dir)
 
     # Get full analysis segment for output file naming
     full_segment = workflow.analysis_time
-    ifos = workflow.ifos
 
     # Identify which injections to do by presence of sub-sections in
     # the configuration file
@@ -228,10 +225,12 @@ def setup_injection_workflow(workflow, output_dir=None,
                           out_dir=output_dir, ifos='HL',
                           tags=curr_tags)
             if exe is PycbcCreateInjectionsExecutable:
-                config_url = workflow.cp.get('workflow-injections',
-                                             section+'-config-file')
-                config_file = resolve_url_to_file(config_url)
-                node, inj_file = inj_job.create_node(config_file)
+                config_urls = workflow.cp.get('workflow-injections',
+                                              section+'-config-files')
+                config_urls = config_urls.split(',')
+                config_files = FileList([resolve_url_to_file(cf.strip())
+                                         for cf in config_urls])
+                node, inj_file = inj_job.create_node(config_files)
             else:
                 node = inj_job.create_node(full_segment)
             if injection_method == "AT_RUNTIME":
@@ -253,61 +252,6 @@ def setup_injection_workflow(workflow, output_dir=None,
             )
             curr_file = resolve_url_to_file(injection_path, attrs=file_attrs)
             inj_files.append(curr_file)
-        elif injection_method in ["IN_COH_PTF_WORKFLOW", "AT_COH_PTF_RUNTIME"]:
-            inj_job = LalappsInspinjExecutable(workflow.cp, inj_section_name,
-                                               out_dir=output_dir, ifos=ifos,
-                                               tags=curr_tags)
-            node = inj_job.create_node(full_segment, exttrig_file)
-            if injection_method == "AT_COH_PTF_RUNTIME":
-                workflow.execute_node(node)
-            else:
-                workflow.add_node(node)
-            inj_file = node.output_files[0]
-
-            if workflow.cp.has_option("workflow-injections",
-                                      "em-bright-only"):
-                em_filter_job = PycbcDarkVsBrightInjectionsExecutable(
-                                                 workflow.cp,
-                                                 'em_bright_filter',
-                                                 tags=curr_tags,
-                                                 out_dir=output_dir,
-                                                 ifos=ifos)
-                node = em_filter_job.create_node(inj_file, full_segment,
-                                                 curr_tags)
-                if injection_method == "AT_COH_PTF_RUNTIME":
-                    workflow.execute_node(node)
-                else:
-                    workflow.add_node(node)
-                inj_file = node.output_files[0]
-
-            if workflow.cp.has_option("workflow-injections",
-                                      "do-jitter-skyloc"):
-                jitter_job = LigolwCBCJitterSkylocExecutable(workflow.cp,
-                                                             'jitter_skyloc',
-                                                             tags=curr_tags,
-                                                             out_dir=output_dir,
-                                                             ifos=ifos)
-                node = jitter_job.create_node(inj_file, full_segment, curr_tags)
-                if injection_method == "AT_COH_PTF_RUNTIME":
-                    workflow.execute_node(node)
-                else:
-                    workflow.add_node(node)
-                inj_file = node.output_files[0]
-
-            if workflow.cp.has_option("workflow-injections",
-                                      "do-align-total-spin"):
-                align_job = LigolwCBCAlignTotalSpinExecutable(workflow.cp,
-                        'align_total_spin', tags=curr_tags, out_dir=output_dir,
-                        ifos=ifos)
-                node = align_job.create_node(inj_file, full_segment, curr_tags)
-
-                if injection_method == "AT_COH_PTF_RUNTIME":
-                    workflow.execute_node(node)
-                else:
-                    workflow.add_node(node)
-                inj_file = node.output_files[0]
-
-            inj_files.append(inj_file)
         else:
             err = "Injection method must be one of IN_WORKFLOW, "
             err += "AT_RUNTIME or PREGENERATED. Got %s." % (injection_method)
@@ -315,5 +259,5 @@ def setup_injection_workflow(workflow, output_dir=None,
 
         inj_tags.append(inj_tag)
 
-    logging.info("Leaving injection module.")
+    logger.info("Leaving injection module.")
     return inj_files, inj_tags

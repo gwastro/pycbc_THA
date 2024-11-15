@@ -28,45 +28,21 @@ provides additional abstraction and argument handling.
 """
 import os
 import shutil
+import logging
 import tempfile
+import subprocess
+import warnings
+from packaging import version
 from urllib.request import pathname2url
 from urllib.parse import urljoin, urlsplit
+
 import Pegasus.api as dax
+
+logger = logging.getLogger('pycbc.workflow.pegasus_workflow')
 
 PEGASUS_FILE_DIRECTORY = os.path.join(os.path.dirname(__file__),
                                       'pegasus_files')
 
-GRID_START_TEMPLATE = '''#!/bin/bash
-
-if [ -f /tmp/x509up_u`id -u` ] ; then
-  unset X509_USER_PROXY
-else
-  if [ ! -z ${X509_USER_PROXY} ] ; then
-    if [ -f ${X509_USER_PROXY} ] ; then
-      cp -a ${X509_USER_PROXY} /tmp/x509up_u`id -u`
-    fi
-  fi
-  unset X509_USER_PROXY
-fi
-
-# Check that the proxy is valid
-ecp-cert-info -exists
-RESULT=${?}
-if [ ${RESULT} -eq 0 ] ; then
-  PROXY_TYPE=`ecp-cert-info -type | tr -d ' '`
-  if [ x${PROXY_TYPE} == 'xRFC3820compliantimpersonationproxy' ] ; then
-    ecp-cert-info
-  else
-    cp /tmp/x509up_u`id -u` /tmp/x509up_u`id -u`.orig
-    grid-proxy-init -cert /tmp/x509up_u`id -u`.orig -key /tmp/x509up_u`id -u`.orig
-    rm -f /tmp/x509up_u`id -u`.orig
-    ecp-cert-info
-  fi
-else
-  echo "Error: Could not find a valid grid proxy to submit workflow."
-  exit 1
-fi
-'''
 
 class ProfileShortcuts(object):
     """ Container of common methods for setting pegasus profile information
@@ -102,7 +78,7 @@ class ProfileShortcuts(object):
         self.add_profile("dagman", "retry", number)
 
     def set_execution_site(self, site):
-        self.add_profile("selector", "execution_site", site)
+        self.add_profile("selector", "execution.site", site)
 
 
 class Executable(ProfileShortcuts):
@@ -230,9 +206,18 @@ class Node(ProfileShortcuts):
 
         self._raw_options += [arg]
 
-    def add_opt(self, opt, value=None):
-        """ Add a option
+    def add_opt(self, opt, value=None, check_existing_options=True, **kwargs):  # pylint:disable=unused-argument
+        """ Add an option
         """
+        if check_existing_options and (opt in self._options
+                                       or opt in self._raw_options):
+            err_msg = (
+                "Trying to set option %s with value %s, but it "
+                "has already been provided by the configuration file. "
+                "Usually this should not be given in the config file, "
+                "but contact developers to check"
+            ) % (opt, value)
+            raise ValueError(err_msg)
         if value is not None:
             if not isinstance(value, File):
                 value = str(value)
@@ -266,40 +251,57 @@ class Node(ProfileShortcuts):
         """
         self._add_output(inp)
 
-    def add_input_opt(self, opt, inp):
+    def add_input_opt(self, opt, inp, **kwargs):
         """ Add an option that determines an input
         """
-        self.add_opt(opt, inp._dax_repr())
+        self.add_opt(opt, inp._dax_repr(), **kwargs)
         self._add_input(inp)
 
-    def add_output_opt(self, opt, out):
+    def add_output_opt(self, opt, out, **kwargs):
         """ Add an option that determines an output
         """
-        self.add_opt(opt, out._dax_repr())
+        self.add_opt(opt, out._dax_repr(), **kwargs)
         self._add_output(out)
 
-    def add_output_list_opt(self, opt, outputs):
+    def add_output_list_opt(self, opt, outputs, **kwargs):
         """ Add an option that determines a list of outputs
         """
-        self.add_opt(opt)
+        self.add_opt(opt, **kwargs)
+        # Never check existing options for list option values
+        if 'check_existing_options' in kwargs:
+            kwargs['check_existing_options'] = False
         for out in outputs:
-            self.add_opt(out)
+            self.add_opt(out, **kwargs)
             self._add_output(out)
 
-    def add_input_list_opt(self, opt, inputs):
+    def add_input_list_opt(self, opt, inputs, **kwargs):
         """ Add an option that determines a list of inputs
         """
-        self.add_opt(opt)
+        self.add_opt(opt, **kwargs)
+        # Never check existing options for list option values
+        if 'check_existing_options' in kwargs:
+            del kwargs['check_existing_options']
         for inp in inputs:
-            self.add_opt(inp)
+            self.add_opt(
+                inp,
+                check_existing_options=False,
+                **kwargs
+            )
             self._add_input(inp)
 
-    def add_list_opt(self, opt, values):
+    def add_list_opt(self, opt, values, **kwargs):
         """ Add an option with a list of non-file parameters.
         """
-        self.add_opt(opt)
+        self.add_opt(opt, **kwargs)
+        # Never check existing options for list option values
+        if 'check_existing_options' in kwargs:
+            del kwargs['check_existing_options']
         for val in values:
-            self.add_opt(val)
+            self.add_opt(
+                val,
+                check_existing_options=False,
+                **kwargs
+            )
 
     def add_input_arg(self, inp):
         """ Add an input as an argument
@@ -344,6 +346,14 @@ class Workflow(object):
     """
     def __init__(self, name='my_workflow', directory=None, cache_file=None,
                  dax_file_name=None):
+        # Pegasus logging is fairly verbose, quieten it down a bit
+        # This sets the logger to one level less verbose than the root
+        # (pycbc) logger
+
+        curr_level = logging.getLogger().level
+        # Get the logger associated with the Pegasus workflow import
+        pegasus_logger = logging.getLogger('Pegasus')
+        pegasus_logger.setLevel(curr_level + 10)
         self.name = name
         self._rc = dax.ReplicaCatalog()
         self._tc = dax.TransformationCatalog()
@@ -369,7 +379,7 @@ class Workflow(object):
             self.filename = dax_file_name
         self._adag = dax.Workflow(self.filename)
 
-        # A pegasus job version of this workflow for use if it isncluded
+        # A pegasus job version of this workflow for use if it is included
         # within a larger workflow
         self._as_job = SubWorkflow(self.filename, is_planned=False,
                                    _id=self.name)
@@ -729,9 +739,6 @@ class Workflow(object):
             fp.write('pegasus-remove {}/work $@'.format(submitdir))
 
         with open('start', 'w') as fp:
-            if self.cp.has_option('pegasus_profile', 'pycbc|check_grid'):
-                fp.write(GRID_START_TEMPLATE)
-                fp.write('\n')
             fp.write('pegasus-run {}/work $@'.format(submitdir))
 
         os.chmod('status', 0o755)
@@ -788,6 +795,15 @@ class SubWorkflow(dax.SubWorkflow):
 
         self.add_planner_arg('pegasus.dir.storage.mapper.replica.file',
                              os.path.basename(output_map_file.name))
+        # Ensure output_map_file has the for_planning flag set. There's no
+        # API way to set this after the File is initialized, so we have to
+        # change the attribute here.
+        # WORSE, we only want to set this if the pegasus *planner* is version
+        # 5.0.4 or larger
+        sproc_out = subprocess.check_output(['pegasus-version']).strip()
+        sproc_out = sproc_out.decode()
+        if version.parse(sproc_out) >= version.parse('5.0.4'):
+            output_map_file.for_planning=True
         self.add_inputs(output_map_file)
 
         # I think this is needed to deal with cases where the subworkflow file
@@ -866,10 +882,11 @@ class File(dax.File):
     @classmethod
     def from_path(cls, path):
         """Takes a path and returns a File object with the path as the PFN."""
-        logging.warn("The from_path method in pegasus_workflow is deprecated. "
-                     "Please use File.from_path (for output files) in core.py "
-                     "or resolve_url_to_file in core.py (for input files) "
-                     "instead.")
+        warnings.warn("The from_path method in pegasus_workflow is "
+                      "deprecated. Please use File.from_path (for "
+                      "output files) in core.py or resolve_url_to_file "
+                      "in core.py (for input files) instead.",
+                      DeprecationWarning)
         urlparts = urlsplit(path)
         site = 'nonlocal'
         if (urlparts.scheme == '' or urlparts.scheme == 'file'):

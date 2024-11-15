@@ -1,7 +1,10 @@
 """ This module contains functions for calculating single-ifo ranking
 statistic values
 """
+import logging
 import numpy
+
+logger = logging.getLogger('pycbc.events.ranking')
 
 
 def effsnr(snr, reduced_x2, fac=250.):
@@ -299,6 +302,21 @@ sngls_ranking_function_dict = {
     'newsnr_sgveto_psdvar_scaled_threshold': get_newsnr_sgveto_psdvar_scaled_threshold,
 }
 
+# Lists of datasets required in the trigs object for each function
+required_datasets = {}
+required_datasets['snr'] = ['snr']
+required_datasets['newsnr'] = required_datasets['snr'] + ['chisq', 'chisq_dof']
+required_datasets['new_snr'] = required_datasets['newsnr']
+required_datasets['newsnr_sgveto'] = required_datasets['newsnr'] + ['sg_chisq']
+required_datasets['newsnr_sgveto_psdvar'] = \
+    required_datasets['newsnr_sgveto'] + ['psd_var_val']
+required_datasets['newsnr_sgveto_psdvar_threshold'] = \
+    required_datasets['newsnr_sgveto_psdvar']
+required_datasets['newsnr_sgveto_psdvar_scaled'] = \
+    required_datasets['newsnr_sgveto_psdvar']
+required_datasets['newsnr_sgveto_psdvar_scaled_threshold'] = \
+    required_datasets['newsnr_sgveto_psdvar']
+
 
 def get_sngls_ranking_from_trigs(trigs, statname, **kwargs):
     """
@@ -309,7 +327,7 @@ def get_sngls_ranking_from_trigs(trigs, statname, **kwargs):
 
     Parameters
     -----------
-    trigs: dict of numpy.ndarrays
+    trigs: dict of numpy.ndarrays, SingleDetTriggers or ReadByTemplate
         Dictionary holding single detector trigger information.
     statname:
         The statistic to use.

@@ -16,17 +16,25 @@
 # 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 """ Make tables describing a foreground event"""
 
-import h5py, argparse, logging, sys
-import matplotlib; matplotlib.use('Agg')
-import numpy, lal, datetime
-import pycbc.version, pycbc.results, pycbc.pnutils
-from pycbc.events import ranking
+import argparse
+import logging
+import sys
+import matplotlib
+matplotlib.use('Agg')
+import datetime
+import numpy
+
+import lal
+
+from pycbc import add_common_pycbc_options
+import pycbc.results
+import pycbc.pnutils
+from pycbc.io.hdf import HFile
+from pycbc.events import ranking, stat as pystat
 from pycbc.results import followup
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--version', action='version',
-    version=pycbc.version.git_verbose_msg)
-parser.add_argument('--verbose', action='store_true')
+add_common_pycbc_options(parser)
 parser.add_argument('--single-trigger-files', nargs='+',
     help="HDF format single detector trigger files for the full data run")
 parser.add_argument('--bank-file',
@@ -41,29 +49,44 @@ parser.add_argument('--statmap-file-subspace-name', default='background_exc',
 trig_input = parser.add_mutually_exclusive_group(required=True)
 trig_input.add_argument('--n-loudest', type=int,
     help="Examine the n'th loudest trigger, use with statmap file")
-parser.add_argument('--sort-variable', default='ifar',
-                    help='Which subgroup of --analysis-category to use for '
-                         'sorting. Default=ifar')
-parser.add_argument('--sort-order', default='descending',
-                    choices=['ascending','descending'],
-                    help='Which direction to use when sorting on '
-                         '--sort-variable. Default=descending')
 trig_input.add_argument('--trigger-id', type=int,
     help="Examine the trigger with specified ID, use with statmap file. An "
          "alternative to --n-loudest. Cannot be used together")
+parser.add_argument('--sort-variable', default='ifar',
+    help='Which subgroup of --analysis-category to use for '
+         'sorting if using --n-loudest. Default=ifar')
+parser.add_argument('--sort-order', default='descending',
+    choices=['ascending','descending'],
+    help='Which direction to use when sorting on '
+         '--sort-variable with --n-loudest. Default=descending')
+parser.add_argument('--title',
+    help="Supply a title for the event details. Defaults are "
+         "'Parameters of event ranked N' if --n-loudest is given, or "
+         "'Details of trigger' for --trigger-id.")
 parser.add_argument('--include-summary-page-link', action='store_true',
     help="If given, will include a link to the DQ summary page on the "
          "single detector trigger tables.")
 parser.add_argument('--include-gracedb-link', action='store_true',
     help="If given, will provide a link to search GraceDB for events "
          "within a 3s window around the coincidence time.")
-
+parser.add_argument('--max-columns', type=int,
+    help="Maximum number of columns allowed in the table (not including detector names)")
+pystat.insert_statistic_option_group(parser,
+    default_ranking_statistic='single_ranking_only')
 
 args = parser.parse_args()
 pycbc.init_logging(args.verbose)
 
+if args.ranking_statistic not in ['quadsum', 'single_ranking_only']:
+    logging.warning(
+        "For the coincident info table, we only use single ranking, not %s, "
+        "this option will be ignored",
+        args.ranking_statistic
+    )
+    args.ranking_statistic = 'quadsum'
+
 # Get the nth loudest trigger from the output of pycbc_coinc_statmap
-f = h5py.File(args.statmap_file, 'r')
+f = HFile(args.statmap_file, 'r')
 d = f[args.statmap_file_subspace_name]
 
 if args.n_loudest is not None:
@@ -123,23 +146,27 @@ for ifo in ifo_list:
 # Store the single detector trigger files keyed by ifo in a dictionary
 files = {}
 for fname in args.single_trigger_files:
-    f2 = h5py.File(fname, 'r')
+    f2 = HFile(fname, 'r')
     ifos = f2.keys()
     for ifo in ifos:
         files[ifo] = f2[ifo]
 
-bank = h5py.File(args.bank_file, 'r')
+bank = HFile(args.bank_file, 'r')
 statmapfile = d
 # Data will store the values that will appear in the resulting single-detector
 # table. Each entry in data corresponds to each row in the final table and
 # should be a list of values. So data is will be a list of lists.
 data = []
+row_labels = []
+rank_method = pystat.get_statistic_from_opts(args, list(files.keys()))
+
 for ifo in files.keys():
 
     # ignore ifo if coinc didn't participate (only for multi-ifo workflow)
     if (statmapfile['%s/time' % ifo][n] == -1.0):
         continue
 
+    row_labels.append(ifo)
     d = files[ifo]
     i = idx[ifo]
     tid = d['template_id'][i]
@@ -147,9 +174,14 @@ for ifo in files.keys():
     mchirp = (pycbc.pnutils.mass1_mass2_to_mchirp_eta(bank['mass1'][tid],
                                                       bank['mass2'][tid]))[0]
 
-    time = d['end_time'][:][i]
+    time = d['end_time'][i]
     utc = lal.GPSToUTC(int(time))[0:6]
-
+    trig_dict = {
+        k: numpy.array([d[k][i]])
+        for k in d.keys()
+        if not k.endswith('_template')
+        and k not in ['gating', 'search', 'template_boundaries']
+    }
     # Headers will store the headers that will appear in the table.
     headers = []
     data.append([])
@@ -158,9 +190,6 @@ for ifo in files.keys():
     if args.include_summary_page_link:
         data[-1].append(pycbc.results.dq.get_summary_page_link(ifo, utc))
         headers.append("Detector&nbsp;status")
-    else:
-        data[-1].append(ifo)
-        headers.append("Ifo")
 
     # End times
     data[-1].append(str(datetime.datetime(*utc)))
@@ -168,14 +197,28 @@ for ifo in files.keys():
     headers.append("UTC&nbsp;End&nbsp;Time")
     headers.append("GPS&nbsp;End&nbsp;time")
 
+    #headers.append("Stat")
+    # Determine statistic naming
+    if args.sngl_ranking == "newsnr":
+        sngl_stat_name = "Reweighted SNR"
+    elif args.sngl_ranking == "newsnr_sgveto":
+        sngl_stat_name = "Reweighted SNR (+sgveto)"
+    elif args.sngl_ranking == "newsnr_sgveto_psdvar":
+        sngl_stat_name = "Reweighted SNR (+sgveto+psdvar)"
+    elif args.sngl_ranking == "snr":
+        sngl_stat_name = "SNR"
+    else:
+        sngl_stat_name = args.sngl_ranking
+
+    stat = rank_method.get_sngl_ranking(trig_dict)
+    headers.append(sngl_stat_name)
+    data[-1].append('%5.2f' % stat[0])
+
     # SNR and phase (not showing any single-det stat here)
     data[-1].append('%5.2f' % d['snr'][i])
     data[-1].append('%5.2f' % d['coa_phase'][i])
-    #data[-1].append('%5.2f' % ranking.newsnr(d['snr'][i], rchisq))
     headers.append("&rho;")
     headers.append("Phase")
-    #headers.append("Stat")
-
     # Signal-glitch discrimators
     data[-1].append('%5.2f' % rchisq)
     data[-1].append('%i' % d['chisq_dof'][i])
@@ -206,10 +249,15 @@ for ifo in files.keys():
     headers.append("s<sub>2z</sub>")
     headers.append("Duration")
 
-html += str(pycbc.results.static_table(data, headers))
+html += str(pycbc.results.static_table(
+    data,
+    headers,
+    columns_max=args.max_columns,
+    row_labels=row_labels
+))
 ###############################################################################
 
 pycbc.results.save_fig_with_metadata(html, args.output_file, {},
                         cmd=' '.join(sys.argv),
-                        title=title,
+                        title=args.title if args.title else title,
                         caption=caption)

@@ -26,26 +26,39 @@ This module provides the worker functions and classes that are used when
 creating a workflow. For details about the workflow module see here:
 https://ldas-jobs.ligo.caltech.edu/~cbc/docs/pycbc/ahope.html
 """
-import os, stat, subprocess, logging, math, string, urllib, pickle, copy
+import os
+import stat
+import subprocess
+import logging
+import math
+import string
+import urllib
+import pickle
+import copy
 import configparser as ConfigParser
 from urllib.request import pathname2url
 from urllib.parse import urljoin
-import numpy, random
+import numpy
+import random
 from itertools import combinations, groupby, permutations
 from operator import attrgetter
+
 import lal
 import lal.utils
 import Pegasus.api  # Try and move this into pegasus_workflow
-from glue import lal as gluelal
 from ligo import segments
 from ligo.lw import lsctables, ligolw
 from ligo.lw import utils as ligolw_utils
 from ligo.lw.utils import segments as ligolw_segments
+
 from pycbc import makedir
 from pycbc.io.ligolw import LIGOLWContentHandler, create_process_table
+
 from . import pegasus_workflow
 from .configuration import WorkflowConfigParser, resolve_url
 from .pegasus_sites import make_catalog
+
+logger = logging.getLogger('pycbc.workflow.core')
 
 
 def make_analysis_dir(path):
@@ -61,6 +74,7 @@ file_input_from_config_dict = {}
 
 class Executable(pegasus_workflow.Executable):
     # These are the file retention levels
+    DO_NOT_KEEP = 0
     INTERMEDIATE_PRODUCT = 1
     ALL_TRIGGERS = 2
     MERGED_TRIGGERS = 3
@@ -147,6 +161,15 @@ class Executable(pegasus_workflow.Executable):
         self.update_output_directory(out_dir=out_dir)
 
         # Determine the level at which output files should be kept
+        if cp.has_option_tags('pegasus_profile-%s' % name,
+                              'pycbc|retention_level', tags):
+            # Get the retention_level from the config file
+            # This method allows us to use the retention levels
+            # defined above
+            cfg_ret_level = cp.get_opt_tags('pegasus_profile-%s' % name,
+                    'pycbc|retention_level', tags)
+            self.current_retention_level = getattr(self, cfg_ret_level)
+
         self.update_current_retention_level(self.current_retention_level)
 
         # Should I reuse this executable?
@@ -197,7 +220,7 @@ class Executable(pegasus_workflow.Executable):
             # need to do anything here, as I cannot easily check it exists.
             exe_path = exe_url.path
         else:
-            # Could be http, gsiftp, etc. so it needs fetching if run now
+            # Could be http, https, etc. so it needs fetching if run now
             self.needs_fetching = True
             if self.needs_fetching and not self.installed:
                 err_msg = "Non-file path URLs cannot be used unless the "
@@ -214,8 +237,12 @@ class Executable(pegasus_workflow.Executable):
             # being directly accessible on the execution site.
             # CVMFS is perfect for this! As is singularity.
             self.exe_pfns[exe_site] = exe_path
-        logging.info("Using %s executable "
-                     "at %s on site %s" % (name, exe_url.path, exe_site))
+        logger.debug(
+            "Using %s executable at %s on site %s",
+            name,
+            exe_url.path,
+            exe_site
+        )
 
         # FIXME: This hasn't yet been ported to pegasus5 and won't work.
         #        Pegasus describes two ways to work with containers, and I need
@@ -472,7 +499,7 @@ class Executable(pegasus_workflow.Executable):
             msg="Cannot find file-retention-level in [workflow] section "
             msg+="of the configuration file. Setting a default value of "
             msg+="retain all files."
-            logging.warn(msg)
+            logger.warning(msg)
             self.retain_files = True
             self.global_retention_threshold = 1
             self.cp.set("workflow", "file-retention-level", "all_files")
@@ -503,7 +530,7 @@ class Executable(pegasus_workflow.Executable):
                     warn_msg += "been set in class {0}. ".format(type(self))
                     warn_msg += "This value should be set explicitly. "
                     warn_msg += "All output from this class will be stored."
-                    logging.warn(warn_msg)
+                    logger.warning(warn_msg)
                     Executable._warned_classes_list.append(type(self).__name__)
             elif self.global_retention_threshold > self.current_retention_level:
                 self.retain_files = False
@@ -526,7 +553,7 @@ class Executable(pegasus_workflow.Executable):
         if tags is None:
             tags = []
         if '' in tags:
-            logging.warn('DO NOT GIVE ME EMPTY TAGS (in %s)', self.name)
+            logger.warning('DO NOT GIVE ME EMPTY TAGS (in %s)', self.name)
             tags.remove('')
         tags = [tag.upper() for tag in tags]
         self.tags = tags
@@ -535,7 +562,7 @@ class Executable(pegasus_workflow.Executable):
             warn_msg = "This job has way too many tags. "
             warn_msg += "Current tags are {}. ".format(' '.join(tags))
             warn_msg += "Current executable {}.".format(self.name)
-            logging.info(warn_msg)
+            logger.warning(warn_msg)
 
         if len(tags) != 0:
             self.tagged_name = "{0}-{1}".format(self.name, '_'.join(tags))
@@ -581,7 +608,7 @@ class Executable(pegasus_workflow.Executable):
             else:
                 warn_string = "warning: config file is missing section "
                 warn_string += "[{0}]".format(sec)
-                logging.warn(warn_string)
+                logger.warning(warn_string)
 
         # get uppermost section
         if self.cp.has_section(f'{self.name}-defaultvalues'):
@@ -601,11 +628,16 @@ class Executable(pegasus_workflow.Executable):
         if out_dir is not None:
             self.out_dir = out_dir
         elif len(self.tags) == 0:
-            self.out_dir = self.name
+            self.out_dir = self.name + "_output"
         else:
-            self.out_dir = self.tagged_name
+            self.out_dir = self.tagged_name + "_output"
+
         if not os.path.isabs(self.out_dir):
             self.out_dir = os.path.join(os.getcwd(), self.out_dir)
+
+        # Make output directory if not there
+        if not os.path.isdir(self.out_dir):
+            make_analysis_dir(self.out_dir)
 
     def _set_pegasus_profile_options(self):
         """Set the pegasus-profile settings for this Executable.
@@ -1114,7 +1146,12 @@ class File(pegasus_workflow.File):
             self.ifo_list = [ifos]
         else:
             self.ifo_list = ifos
-        self.ifo_string = ''.join(self.ifo_list)
+
+        if self.ifo_list is not None:
+            self.ifo_string = ''.join(self.ifo_list)
+        else:
+            self.ifo_string = 'file'
+
         self.description = exe_name
 
         if isinstance(segs, segments.segment):
@@ -1128,7 +1165,7 @@ class File(pegasus_workflow.File):
         if tags is None:
             tags = []
         if '' in tags:
-            logging.warn('DO NOT GIVE EMPTY TAGS (from %s)', exe_name)
+            logger.warning('DO NOT GIVE EMPTY TAGS (from %s)', exe_name)
             tags.remove('')
         self.tags = tags
 
@@ -1548,6 +1585,8 @@ class FileList(list):
         """
         Return all files in this object as a glue.lal.Cache object
         """
+        from glue import lal as gluelal
+
         lal_cache = gluelal.Cache([])
         for entry in self:
             try:
@@ -1808,7 +1847,7 @@ class SegFile(File):
                         # Setting valid segment now is hard!
                         warn_msg = "No information with which to set valid "
                         warn_msg += "segment."
-                        logging.warn(warn_msg)
+                        logger.warning(warn_msg)
                         valid_segment = segments.segment([0,1])
         instnc = cls(ifo_list, description, valid_segment,
                      segment_dict=segmentlistdict, seg_summ_dict=seg_summ_dict,
@@ -2002,7 +2041,7 @@ def make_external_call(cmdList, out_dir=None, out_basename='external_call',
         outFP = None
 
     msg = "Making external call %s" %(' '.join(cmdList))
-    logging.info(msg)
+    logger.info(msg)
     errCode = subprocess.call(cmdList, stderr=errFP, stdout=outFP,\
                               shell=shell)
     if errFP:
@@ -2013,7 +2052,7 @@ def make_external_call(cmdList, out_dir=None, out_basename='external_call',
     if errCode and fail_on_error:
         raise CalledProcessErrorMod(errCode, ' '.join(cmdList),
                 errFile=errFile, outFile=outFile, cmdFile=cmdFile)
-    logging.info("Call successful, or error checking disabled.")
+    logger.info("Call successful, or error checking disabled.")
 
 
 class CalledProcessErrorMod(Exception):
@@ -2041,7 +2080,12 @@ class CalledProcessErrorMod(Exception):
         return msg
 
 
-def resolve_url_to_file(curr_pfn, attrs=None):
+def resolve_url_to_file(
+    curr_pfn,
+    attrs=None,
+    hash_max_chunks=10,
+    hash_chunk_size=int(1e6)
+):
     """
     Resolves a PFN into a workflow.File object.
 
@@ -2065,10 +2109,14 @@ def resolve_url_to_file(curr_pfn, attrs=None):
     not important with input files. Exceptions include things like input
     template banks, where ifos and valid times will be checked in the workflow
     and used in the naming of child job output files.
+
+    hash_max_chunks and hash_chunk_size are used to decide how much of the
+    files to check before they are considered the same, and not copied.
     """
     cvmfsstr1 = 'file:///cvmfs/'
     cvmfsstr2 = 'file://localhost/cvmfs/'
-    cvmfsstrs = (cvmfsstr1, cvmfsstr2)
+    osdfstr1 = 'osdf:///'  # Technically this isn't CVMFS, but same handling!
+    cvmfsstrs = (cvmfsstr1, cvmfsstr2, osdfstr1)
 
     # Get LFN
     urlp = urllib.parse.urlparse(curr_pfn)
@@ -2082,7 +2130,11 @@ def resolve_url_to_file(curr_pfn, attrs=None):
         curr_file = file_input_from_config_dict[curr_lfn][1]
     else:
         # Use resolve_url to download file/symlink as appropriate
-        local_file_path = resolve_url(curr_pfn)
+        local_file_path = resolve_url(
+            curr_pfn,
+            hash_max_chunks=hash_max_chunks,
+            hash_chunk_size=hash_chunk_size,
+        )
         # Create File object with default local path
         curr_file = File.from_path(local_file_path, attrs=attrs)
 
@@ -2097,6 +2149,31 @@ def resolve_url_to_file(curr_pfn, attrs=None):
         tuple_val = (local_file_path, curr_file, curr_pfn)
         file_input_from_config_dict[curr_lfn] = tuple_val
     return curr_file
+
+
+def configparser_value_to_file(cp, sec, opt, attrs=None):
+    """
+    Fetch a file given its url location via the section
+    and option in the workflow configuration parser.
+
+    Parameters
+    -----------
+    cp : ConfigParser object
+         The ConfigParser object holding the workflow configuration settings
+    sec : string
+         The section containing options for this job.
+    opt : string
+         Name of option (e.g. --output-file)
+    attrs : list to specify the 4 attributes of the file.
+
+    Returns
+    --------
+    fileobj_from_path : workflow.File object obtained from the path
+        specified by opt, within sec, in cp.
+    """
+    path = cp.get(sec, opt)
+    fileobj_from_path = resolve_url_to_file(path, attrs=attrs)
+    return fileobj_from_path
 
 
 def get_full_analysis_chunk(science_segs):

@@ -22,20 +22,23 @@ finding and ranking then generate post-processing
 and plots.
 """
 import pycbc
-import pycbc.version
-__version__ = pycbc.version.git_verbose_msg
-__date__    = pycbc.version.date
-__program__ = "pycbc_offline"
 
 import sys
 import socket
-import pycbc.events, pycbc.workflow as wf
-import os, argparse, logging
+import os
+import argparse
+import logging
 import configparser as ConfigParser
+import numpy
+import datetime
+import itertools
+
+import lal
 from ligo import segments
-import numpy, lal, datetime, itertools
-from pycbc.results import create_versioning_page, static_table, layout
-from pycbc.results.versioning import save_fig_with_metadata
+
+import pycbc.events
+import pycbc.workflow as wf
+from pycbc.results import static_table, layout, save_fig_with_metadata
 from pycbc.results.metadata import html_escape
 
 
@@ -58,16 +61,100 @@ def ifo_combos(ifos):
         for ifocomb in combinations:
             yield ifocomb
 
+def finalize(container, workflow, finalize_workflow):
+    # Create the final log file
+    log_file_html = wf.File(workflow.ifos, 'WORKFLOW-LOG', workflow.analysis_time,
+                            extension='.html', directory=rdir['workflow'])
 
-# Log to the screen until we know where the output file is
-logging.basicConfig(format='%(asctime)s:%(levelname)s : %(message)s',
-    level=logging.INFO)
+    gen_file_html = wf.File(workflow.ifos, 'WORKFLOW-GEN', workflow.analysis_time,
+                            extension='.html', directory=rdir['workflow'])
+
+    # Create a page to contain a dashboard link
+    dashboard_file = wf.File(workflow.ifos, 'DASHBOARD', workflow.analysis_time,
+                             extension='.html', directory=rdir['workflow'])
+    dashboard_str = """<center><p style="font-size:20px"><b><a href="PEGASUS_DASHBOARD_URL" target="_blank">Pegasus Dashboard Page</a></b></p></center>"""
+    kwds = {'title': "Pegasus Dashboard",
+            'caption': "Link to Pegasus Dashboard",
+            'cmd': "PYCBC_SUBMIT_DAX_ARGV", }
+    save_fig_with_metadata(dashboard_str, dashboard_file.storage_path, **kwds)
+
+    # Create pages for the submission script to write data
+    wf.makedir(rdir['workflow/dax'])
+    wf.makedir(rdir['workflow/input_map'])
+    wf.makedir(rdir['workflow/output_map'])
+    wf.makedir(rdir['workflow/planning'])
+
+    wf.make_results_web_page(finalize_workflow, os.path.join(os.getcwd(),
+                                                             rdir.base))
+
+    container += workflow
+    container += finalize_workflow
+
+    container.add_subworkflow_dependancy(workflow, finalize_workflow)
+
+    container.save()
+
+    open_box_result_path = rdir['open_box_result']
+    if os.path.exists(open_box_result_path):
+        os.chmod(open_box_result_path, 0o0700)
+    else:
+        pass
+
+    logging.info("Written dax.")
+
+    # Close the log and flush to the html file
+    logging.shutdown()
+    with open(wf_log_file.storage_path, "r") as logfile:
+        logdata = logfile.read()
+    log_str = """
+    <p>Workflow generation script created workflow in output directory: %s</p>
+    <p>Workflow name is: %s</p>
+    <p>Workflow generation script run on host: %s</p>
+    <pre>%s</pre>
+    """ % (os.getcwd(), args.workflow_name, socket.gethostname(), logdata)
+    kwds = {'title': 'Workflow Generation Log',
+            'caption': "Log of the workflow script %s" % sys.argv[0],
+            'cmd': ' '.join(sys.argv), }
+    save_fig_with_metadata(log_str, log_file_html.storage_path, **kwds)
+
+    # Add the command line used to a specific file
+    args_to_output = [sys.argv[0]]
+    for arg in sys.argv[1:]:
+        if arg.startswith('--'):
+            # This is an option, add tab
+            args_to_output.append('  ' + arg)
+        else:
+            # This is a parameter, add two tabs
+            args_to_output.append('    ' + arg)
+
+    gen_str = '<pre>' + ' \\\n'.join(args_to_output) + '</pre>'
+    kwds = {'title': 'Workflow Generation Command',
+            'caption': "Command used to generate the workflow.",
+            'cmd': ' '.join(sys.argv), }
+    save_fig_with_metadata(gen_str, gen_file_html.storage_path, **kwds)
+    layout.single_layout(rdir['workflow'], ([dashboard_file, gen_file_html, log_file_html]))
+    sys.exit(0)
+
+def check_stop(job_name, container, workflow, finalize_workflow):
+    #This function will finalize the workflow and stop it at the job specified.
+    #Under [workflow] supply the option stop-after = and the job name you want the workflow to stop at. Current options are [inspiral, hdf_trigger_merge, statmap]
+    if workflow.cp.has_option('workflow', 'stop-after'):
+        stop_after = workflow.cp.get('workflow', 'stop-after')
+        if stop_after == job_name:
+            logging.info("Search worflow will be stopped after " + str(job_name))
+            finalize(container, workflow, finalize_workflow)
+        else: 
+            pass
+
 
 parser = argparse.ArgumentParser(description=__doc__[1:])
-parser.add_argument('--version', action='version', version=__version__)
+pycbc.add_common_pycbc_options(parser)
 wf.add_workflow_command_line_group(parser)
 wf.add_workflow_settings_cli(parser)
 args = parser.parse_args()
+
+# Default logging level is info: --verbose adds to this 
+pycbc.init_logging(args.verbose, default_level=1)
 
 container = wf.Workflow(args, args.workflow_name)
 workflow = wf.Workflow(args, args.workflow_name + '-main')
@@ -80,7 +167,7 @@ rdir = layout.SectionNumber('results', ['analysis_time',
                                  'detector_sensitivity',
                                  'data_quality',
                                  'single_triggers',
-                                 'coincident_triggers',
+                                 'background_triggers',
                                  'injections',
                                  'search_sensitivity',
                                  'open_box_result',
@@ -90,20 +177,13 @@ rdir = layout.SectionNumber('results', ['analysis_time',
 wf.makedir(rdir.base)
 wf.makedir(rdir['workflow'])
 
+# We are _also_ logging to a file
 wf_log_file = wf.File(workflow.ifos, 'workflow-log', workflow.analysis_time,
                       extension='.txt',
                       directory=rdir['workflow'])
 
-logging.basicConfig(format='%(asctime)s:%(levelname)s : %(message)s',
-                    filename=wf_log_file.storage_path,
-                    level=logging.INFO,
-                    filemode='w')
-
-logfile = logging.FileHandler(filename=wf_log_file.storage_path,mode='w')
-logfile.setLevel(logging.INFO)
-formatter = logging.Formatter('%(asctime)s:%(levelname)s : %(message)s')
-logfile.setFormatter(formatter)
-logging.getLogger('').addHandler(logfile)
+pycbc.init_logging(args.verbose, default_level=1,
+                   to_file=wf_log_file.storage_path)
 logging.info("Created log file %s" % wf_log_file.storage_path)
 
 # put start / end time at top of summary page
@@ -128,7 +208,8 @@ save_fig_with_metadata(time_str, time_file.storage_path, **kwds)
 # Get segments and find the data locations
 sci_seg_name = 'science'
 science_seg_file = wf.get_segments_file(workflow, sci_seg_name, 'segments-science',
-                                        rdir['analysis_time/segment_data'])
+                                        rdir['analysis_time/segment_data'],
+                                        tags=['science'])
 
 ssegs = {}
 for ifo in workflow.ifos:
@@ -146,13 +227,15 @@ datafind_files, analyzable_file, analyzable_segs, analyzable_name = \
 final_veto_name = 'vetoes'
 final_veto_file = wf.get_segments_file(workflow, final_veto_name,
                                        'segments-vetoes',
-                                       rdir['analysis_time/segment_data'])
+                                       rdir['analysis_time/segment_data'],
+                                       tags=['veto'])
 
 # Get dq segments from veto definer and calculate data quality timeseries
 dq_flag_name = 'dq_flag'
 dq_segment_file = wf.get_flag_segments_file(workflow, dq_flag_name,
                                       'segments-dq',
-                                      rdir['analysis_time/segment_data'])
+                                      rdir['analysis_time/segment_data'],
+                                      tags=['dq'])
 
 # Template bank stuff
 hdfbank = wf.setup_tmpltbank_workflow(workflow, analyzable_segs,
@@ -169,7 +252,7 @@ bank_tags = []
 if 'mass1_mass2' in workflow.cp.get_subsections('plot_bank'):
     bank_tags=['mass1_mass2']
 bank_plot = wf.make_template_plot(workflow, hdfbank,
-                                  rdir['coincident_triggers'],
+                                  rdir['background_triggers'],
                                   tags=bank_tags)
 
 ######################## Setup the FULL DATA run ##############################
@@ -180,26 +263,27 @@ ind_insps = insps = wf.setup_matchedfltr_workflow(workflow, analyzable_segs,
                                    datafind_files, splitbank_files_fd,
                                    output_dir, tags=['full_data'])
 
+#check to see if workflow should stop at inspiral jobs.
+check_stop('inspiral', container, workflow, finalize_workflow)
+
 insps = wf.merge_single_detector_hdf_files(workflow, hdfbank,
                                            insps, output_dir,
                                            tags=['full_data'])
 
+check_stop('hdf_trigger_merge', container, workflow, finalize_workflow)
+
 # setup sngl trigger distribution fitting jobs
-# 'statfiles' is list of files used in calculating coinc statistic
+# 'statfiles' is list of files used in calculating statistic
 # 'dqfiles' is the subset of files containing data quality information
 statfiles = []
-dqfiles = []
-dqfile_labels = []
-dq_labels = workflow.cp.get_subsections('workflow-data_quality')
-for dq_label in dq_labels:
-    dq_label_files = wf.setup_dq_reranking(workflow, dq_label, insps, hdfbank,
-                                       analyzable_segs, analyzable_file,
-                                       dq_segment_file,
-                                       output_dir='dq',
-                                       tags=['full_data'])
-    statfiles += dq_label_files
-    dqfiles += dq_label_files
-    dqfile_labels += len(dq_label_files) * [dq_label]
+
+dqfiles, dqfile_labels = wf.setup_dq_reranking(workflow, insps,
+                                               hdfbank, analyzable_file,
+                                               analyzable_name,
+                                               dq_segment_file,
+                                               output_dir='dq',
+                                               tags=['full_data'])
+statfiles += dqfiles
 
 statfiles += wf.setup_trigger_fitting(workflow, insps, hdfbank,
                                       final_veto_file, final_veto_name,
@@ -265,6 +349,9 @@ for ifo in ifo_ids.keys():
         workflow, hdfbank, inspcomb, statfiles, final_veto_file,
         final_veto_name, output_dir, tags=ctagsngl)
 
+#check to see if workflow should stop at statmap jobs.
+check_stop('statmap', container, workflow, finalize_workflow)
+
 ifo_sets = list(ifo_combos(ifo_ids.keys()))
 if analyze_singles:
     ifo_sets += [(ifo,) for ifo in ifo_ids.keys()]
@@ -279,20 +366,29 @@ for ifocomb in ifo_sets:
     else:
         ordered_ifo_list = ifocomb[0]
         coinctag= '1det'
-    other_ifo_keys = list(no_fg_exc_files.keys())
-    other_ifo_keys.remove(ordered_ifo_list)
-    ctagcomb = ['full_data', coinctag]
-    other_bg_files = {ctype: no_fg_exc_files[ctype]
-                      for ctype in other_ifo_keys}
-    final_bg_files[ordered_ifo_list] = wf.setup_exclude_zerolag(
-        workflow,
-        no_fg_exc_files[ordered_ifo_list],
-        wf.FileList(other_bg_files.values()),
-        output_dir, ordered_ifo_list,
-        tags=ctagcomb
-    )
 
-combined_bg_file = wf.setup_combine_statmap(
+    if len(ifo_sets) == 1:
+        # Just one event type - pass it through
+        final_bg_files[ordered_ifo_list] = no_fg_exc_files[ordered_ifo_list]
+    else:
+        # Combining the statmap files, multiple possible event types
+        other_ifo_keys = list(no_fg_exc_files.keys())
+        other_ifo_keys.remove(ordered_ifo_list)
+        ctagcomb = ['full_data', coinctag]
+        other_bg_files = {ctype: no_fg_exc_files[ctype]
+                          for ctype in other_ifo_keys}
+        final_bg_files[ordered_ifo_list] = wf.setup_exclude_zerolag(
+            workflow,
+            no_fg_exc_files[ordered_ifo_list],
+            wf.FileList(other_bg_files.values()),
+            output_dir, ordered_ifo_list,
+            tags=ctagcomb
+        )
+
+if len(ifo_sets) == 1:
+    combined_bg_file = no_fg_exc_files[ordered_ifo_list]
+else:
+    combined_bg_file = wf.setup_combine_statmap(
                                 workflow,
                                 wf.FileList(final_bg_files.values()),
                                 wf.FileList([]),
@@ -446,7 +542,8 @@ for insp_file in full_insps:
         wf.setup_single_det_minifollowups\
             (workflow, insp_file, hdfbank, insp_files_seg_file,
              data_analysed_name, trig_generated_name, 'daxes', currdir,
-             veto_file=censored_veto, veto_segment_name='closed_box',
+             statfiles=wf.FileList(statfiles),
+             fg_file=censored_veto, fg_name='closed_box',
              tags=insp_file.tags + [subsec])
 
 ##################### COINC FULL_DATA plots ###################################
@@ -458,6 +555,7 @@ ifar_ob = wf.make_ifar_plot(workflow, combined_bg_file,
                                     rdir['open_box_result'],
                                     tags=combined_bg_file.tags + ['open_box'],
                                     executable='page_ifar_catalog')
+
 table = wf.make_foreground_table(workflow, combined_bg_file,
                                  hdfbank, rdir['open_box_result'],
                                  singles=insps, extension='.html',
@@ -466,6 +564,17 @@ table = wf.make_foreground_table(workflow, combined_bg_file,
 fore_xmlall = wf.make_foreground_table(workflow, combined_bg_file,
                     hdfbank, rdir['open_box_result'], singles=insps,
                     extension='.xml', tags=["xmlall"])
+
+if workflow.cp.has_option_tags('workflow-minifollowups',
+                               'prepare-gracedb-uploads', ''):
+    # Need to get absolute path here
+    upload_path = os.path.join(workflow.out_dir, 'upload_data')
+    wf.setup_upload_prep_minifollowups(workflow, combined_bg_file, fore_xmlall,
+                                       full_insps, psd_files, hdfbank, insp_files_seg_file,
+                                       data_analysed_name, trig_generated_name,
+                                       'daxes', upload_path,
+                                       tags=combined_bg_file.tags)
+
 fore_xmlloudest = wf.make_foreground_table(workflow, combined_bg_file,
                     hdfbank, rdir['open_box_result'], singles=insps,
                     extension='.xml', tags=["xmlloudest"])
@@ -480,11 +589,11 @@ layout.two_column_layout(rdir['open_box_result'], main_page)
 #layout.two_column_layout(rdir['open_box_result/significance'], detailed_page)
 
 closed_page = [(bank_plot,)]
-layout.two_column_layout(rdir['coincident_triggers'], closed_page)
+layout.two_column_layout(rdir['background_triggers'], closed_page)
 
 # run minifollowups on the output of the loudest events
 mfup_dir_fg = rdir['open_box_result/loudest_events_followup']
-mfup_dir_bg = rdir['coincident_triggers/loudest_background_followup']
+mfup_dir_bg = rdir['background_triggers/loudest_background_followup']
 wf.setup_foreground_minifollowups(workflow, combined_bg_file,
                                   full_insps, hdfbank, insp_files_seg_file,
                                   data_analysed_name, trig_generated_name,
@@ -502,8 +611,8 @@ wf.setup_foreground_minifollowups(workflow, combined_bg_file,
 snrifar_summ = []
 for key in final_bg_files:
     bg_file = final_bg_files[key]
-    open_dir = rdir['open_box_result/{}_coincidences'.format(key)]
-    closed_dir = rdir['coincident_triggers/{}_coincidences'.format(key)]
+    open_dir = rdir['open_box_result/{}_candidates'.format(key)]
+    closed_dir = rdir['background_triggers/{}_background'.format(key)]
     snrifar = wf.make_snrifar_plot(workflow, bg_file, open_dir,
                                    tags=bg_file.tags)
     snrifar_cb = wf.make_snrifar_plot(workflow, bg_file, closed_dir,
@@ -521,37 +630,43 @@ for key in final_bg_files:
         # as it is just blank
         ifar_cb = wf.make_ifar_plot(workflow, bg_file, closed_dir,
                                     tags=bg_file.tags + ['closed_box'])
-    table = wf.make_foreground_table(workflow, bg_file, hdfbank, open_dir,
-                                     singles=insps, extension='.html',
-                                     tags=bg_file.tags)
+        closed_page = [(snrifar_cb, ifar_cb)]
+    else:
+        closed_page = [(snrifar_cb,)]
+    if len(ifo_sets) > 1:
+        # If there is only one ifo_set, then this table has already been made
+        table = wf.make_foreground_table(workflow, bg_file, hdfbank, open_dir,
+                                         singles=insps, extension='.html',
+                                         tags=bg_file.tags)
 
     detailed_page = [(snrifar, ratehist), (snrifar_ifar, ifar_ob), (table,)]
     layout.two_column_layout(open_dir, detailed_page)
 
-    closed_page = [(snrifar_cb, ifar_cb)]
     snrifar_summ += closed_page
     layout.two_column_layout(closed_dir, closed_page)
 
 #################### Plotting of data quality results #########################
 
 # DQ log likelihood plots
-for dqf,dql in zip(dqfiles,dqfile_labels):
-    outdir = rdir[f'data_quality/{dqf.ifo}_trigger_rates_{dql}']
-    wf.make_dq_trigger_rate_plot(workflow, [dqf], outdir, tags=[dql,'full_data'])
+for dqf, dql in zip(dqfiles, dqfile_labels):
+    ifo = dqf.ifo
+    outdir = rdir[f'data_quality/{dqf.ifo}_DQ_results']
 
-    outdir = rdir[f'data_quality/{dqf.ifo}_percentiles_{dql}']
-    wf.make_dq_percentile_plot(workflow, [dqf], outdir, tags=[dql,'full_data'])
+    # plot rates when flag was on
+    wf.make_dq_flag_trigger_rate_plot(workflow, dqf, dql, outdir, tags=[dql])
 
-# DQ background binning plot
-if workflow.cp.has_option_tags('workflow-data_quality', 'background-bins',
-                                tags=None):
-    background_bins = workflow.cp.get_opt_tags('bin_trigger_rates_dq',
-                                               'background-bins',tags=None)
-    bank_tags = workflow.cp.get_subsections('plot_bank')
-    if len(bank_tags) == 0: bank_tags=['bank']
-    for b_tag in bank_tags:
-        wf.make_template_plot(workflow, hdfbank, rdir['data_quality'],
-                              bins=background_bins, tags=['dq_bins',b_tag])
+    # make table of dq segment info
+    wf.make_dq_segment_table(workflow, dqf, outdir, tags=[dql])
+
+    # plot background bins
+    background_bins = workflow.cp.get_opt_tags(
+        'bin_templates', 'background-bins', tags=[ifo])
+    wf.make_template_plot(workflow, hdfbank, outdir,
+                          bins=background_bins,
+                          tags=[ifo, 'dq_bins'] + bank_tags)
+
+    # make table of template bin info
+    wf.make_template_bin_table(workflow, dqf, outdir, tags=[ifo])
 
 ############################## Setup the injection runs #######################
 
@@ -608,7 +723,6 @@ for inj_file, tag in zip(inj_files, inj_tags):
         curr_out = wf.setup_interval_coinc_inj(
             workflow,
             hdfbank,
-            full_insps,
             inspcomb,
             statfiles,
             final_bg_files[ordered_ifo_list],
@@ -802,78 +916,12 @@ ini_file = wf.FileList([wf.File(workflow.ifos, '', workflow.analysis_time,
                         file_url='file://' + ini_file_path)])
 layout.single_layout(base, ini_file)
 
-
 # Create versioning information
-create_versioning_page(rdir['workflow/version'], container.cp)
-
+wf.make_versioning_page(
+    workflow,
+    container.cp,
+    rdir['workflow/version'],
+)
 
 ############################ Finalization ####################################
-
-# Create the final log file
-log_file_html = wf.File(workflow.ifos, 'WORKFLOW-LOG', workflow.analysis_time,
-                        extension='.html', directory=rdir['workflow'])
-
-gen_file_html = wf.File(workflow.ifos, 'WORKFLOW-GEN', workflow.analysis_time,
-                        extension='.html', directory=rdir['workflow'])
-
-# Create a page to contain a dashboard link
-dashboard_file = wf.File(workflow.ifos, 'DASHBOARD', workflow.analysis_time,
-                         extension='.html', directory=rdir['workflow'])
-dashboard_str = """<center><p style="font-size:20px"><b><a href="PEGASUS_DASHBOARD_URL" target="_blank">Pegasus Dashboard Page</a></b></p></center>"""
-kwds = { 'title' : "Pegasus Dashboard",
-         'caption' : "Link to Pegasus Dashboard",
-         'cmd' : "PYCBC_SUBMIT_DAX_ARGV", }
-save_fig_with_metadata(dashboard_str, dashboard_file.storage_path, **kwds)
-
-# Create pages for the submission script to write data
-wf.makedir(rdir['workflow/dax'])
-wf.makedir(rdir['workflow/input_map'])
-wf.makedir(rdir['workflow/output_map'])
-wf.makedir(rdir['workflow/planning'])
-
-wf.make_results_web_page(finalize_workflow, os.path.join(os.getcwd(),
-                         rdir.base))
-
-container += workflow
-container += finalize_workflow
-
-container.add_subworkflow_dependancy(workflow, finalize_workflow)
-
-container.save()
-
-# Protect the open box results folder
-os.chmod(rdir['open_box_result'], 0o0700)
-
-logging.info("Written dax.")
-
-# Close the log and flush to the html file
-logging.shutdown()
-with open (wf_log_file.storage_path, "r") as logfile:
-    logdata=logfile.read()
-log_str = """
-<p>Workflow generation script created workflow in output directory: %s</p>
-<p>Workflow name is: %s</p>
-<p>Workflow generation script run on host: %s</p>
-<pre>%s</pre>
-""" % (os.getcwd(), args.workflow_name, socket.gethostname(), logdata)
-kwds = { 'title' : 'Workflow Generation Log',
-         'caption' : "Log of the workflow script %s" % sys.argv[0],
-         'cmd' :' '.join(sys.argv), }
-save_fig_with_metadata(log_str, log_file_html.storage_path, **kwds)
-
-# Add the command line used to a specific file
-args_to_output = [sys.argv[0]]
-for arg in sys.argv[1:]:
-    if arg.startswith('--'):
-        # This is an option, add tab
-        args_to_output.append('  ' + arg)
-    else:
-        # This is a parameter, add two tabs
-        args_to_output.append('    ' + arg)
-
-gen_str = '<pre>' + ' \\\n'.join(args_to_output) + '</pre>'
-kwds = { 'title' : 'Workflow Generation Command',
-         'caption' : "Command used to generate the workflow.",
-         'cmd' :' '.join(sys.argv), }
-save_fig_with_metadata(gen_str, gen_file_html.storage_path, **kwds)
-layout.single_layout(rdir['workflow'], ([dashboard_file, gen_file_html, log_file_html]))
+finalize(container, workflow, finalize_workflow)

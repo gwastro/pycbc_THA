@@ -28,15 +28,72 @@ https://ldas-jobs.ligo.caltech.edu/~cbc/docs/pycbc/ahope/initialization_inifile.
 """
 
 import os
+import logging
 import stat
 import shutil
+import subprocess
 from shutil import which
+import urllib.parse
 from urllib.parse import urlparse
+import hashlib
 
 from pycbc.types.config import InterpolatingConfigParser
 
+logger = logging.getLogger('pycbc.workflow.configuration')
 
-def resolve_url(url, directory=None, permissions=None, copy_to_cwd=True):
+# NOTE urllib is weird. For some reason it only allows known schemes and will
+# give *wrong* results, rather then failing, if you use something like gsiftp
+# We can add schemes explicitly, as below, but be careful with this!
+urllib.parse.uses_relative.append('osdf')
+urllib.parse.uses_netloc.append('osdf')
+
+
+def hash_compare(filename_1, filename_2, chunk_size=None, max_chunks=None):
+    """
+    Calculate the sha1 hash of a file, or of part of a file
+
+    Parameters
+    ----------
+    filename_1 : string or path
+        the first file to be hashed / compared
+    filename_2 : string or path
+        the second file to be hashed / compared
+    chunk_size : integer
+        This size of chunks to be read in and hashed. If not given, will read
+        the whole file (may be slow for large files).
+    max_chunks: integer
+        This many chunks to be compared. If all chunks so far have been the
+        same, then just assume its the same file. Default 10
+
+    Returns
+    -------
+    hash : string
+        The hexdigest() after a sha1 hash of (part of) the file
+    """
+
+    if max_chunks is None and chunk_size is not None:
+        max_chunks = 10
+    elif chunk_size is None:
+        max_chunks = 1
+
+    with open(filename_1, 'rb') as f1:
+        with open(filename_2, 'rb') as f2:
+            for _ in range(max_chunks):
+                h1 = hashlib.sha1(f1.read(chunk_size)).hexdigest()
+                h2 = hashlib.sha1(f2.read(chunk_size)).hexdigest()
+                if h1 != h2:
+                    return False
+    return True
+
+
+def resolve_url(
+    url,
+    directory=None,
+    permissions=None,
+    copy_to_cwd=True,
+    hash_max_chunks=None,
+    hash_chunk_size=None,
+):
     """Resolves a URL to a local file, and returns the path to that file.
 
     If a URL is given, the file will be copied to the current working
@@ -67,17 +124,26 @@ def resolve_url(url, directory=None, permissions=None, copy_to_cwd=True):
         elif copy_to_cwd:
             if os.path.isfile(filename):
                 # check to see if src and dest are the same file
-                src_inode = os.stat(u.path)[stat.ST_INO]
-                dst_inode = os.stat(filename)[stat.ST_INO]
-                if src_inode != dst_inode:
+                same_file = hash_compare(
+                    u.path,
+                    filename,
+                    chunk_size=hash_chunk_size,
+                    max_chunks=hash_max_chunks
+                )
+                if not same_file:
                     shutil.copy(u.path, filename)
             else:
                 shutil.copy(u.path, filename)
 
     elif u.scheme == "http" or u.scheme == "https":
-        # FIXME: Move to top and make optional once 4001 functionality is
-        #        merged
+        # Would like to move ciecplib import to top using import_optional, but
+        # it needs to be available when documentation runs in the CI, and I
+        # can't get it to install in the GitHub CI
         import ciecplib
+        # Make the scitokens logger a little quieter
+        # (it is called through ciecpclib)
+        curr_level = logging.getLogger().level
+        logging.getLogger('scitokens').setLevel(curr_level + 10)
         with ciecplib.Session() as s:
             if u.netloc in ("git.ligo.org", "code.pycbc.phy.syr.edu"):
                 # authenticate with git.ligo.org using callback
@@ -89,9 +155,28 @@ def resolve_url(url, directory=None, permissions=None, copy_to_cwd=True):
         output_fp.write(r.content)
         output_fp.close()
 
+    elif u.scheme == "osdf":
+        # OSDF will require a scitoken to be present and stashcp to be
+        # available. Thanks Dunky for the code here!
+        cmd = [
+            which("stashcp") or "stashcp",
+            u.path,
+            filename,
+        ]
+
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+        except subprocess.CalledProcessError as err:
+            # Print information about the failure
+            print(err.cmd, "failed with")
+            print(err.stderr.decode())
+            print(err.stdout.decode())
+            raise
+
+        return filename
+
     else:
-        # TODO: We could support other schemes such as gsiftp by
-        # calling out to globus-url-copy
+        # TODO: We could support other schemes as needed
         errmsg = "Unknown URL scheme: %s\n" % (u.scheme)
         errmsg += "Currently supported are: file, http, and https."
         raise ValueError(errmsg)

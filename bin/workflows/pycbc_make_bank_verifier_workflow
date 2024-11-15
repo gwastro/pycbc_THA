@@ -31,7 +31,7 @@ from ligo import segments
 
 import pycbc.version
 import pycbc.workflow as wf
-from pycbc.results import (create_versioning_page, static_table, layout)
+from pycbc.results import (static_table, layout)
 from pycbc.workflow.jobsetup import (select_generic_executable,
                                      int_gps_time_to_str,
                                      PycbcCreateInjectionsExecutable,
@@ -219,8 +219,9 @@ def add_banksim_set(workflow, file_tag, num_injs, curr_tags, split_banks):
         # are copied over to the results directory
         shutil.copy2(inspinj_job.get_opt('config-files'), conf_dir)
         node, inj_file = inspinj_job.create_node()
-        node.add_opt("--gps-start-time", int_gps_time_to_str(t_seg[0]))
-        node.add_opt("--gps-end-time", int_gps_time_to_str(t_seg[1]))
+        node.add_opt("--ninjections", int(num_injs))        
+        #node.add_opt("--gps-start-time", int_gps_time_to_str(t_seg[0]))
+        #node.add_opt("--gps-end-time", int_gps_time_to_str(t_seg[1]))
     else:
         raise NotImplementedError
     workflow += node
@@ -382,7 +383,7 @@ for tag in sorted(output_pointinjs):
 layout.single_layout(conf_dir, conf_file)
 
 # Create versioning information
-create_versioning_page(rdir['workflow/version'], workflow.cp)
+#create_versioning_page(rdir['workflow/version'], workflow.cp)
 
 wf.make_results_web_page(workflow, os.path.join(os.getcwd(), rdir.base),
                          explicit_dependencies=plotting_nodes)
