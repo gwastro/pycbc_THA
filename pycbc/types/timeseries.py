@@ -17,7 +17,8 @@
 """
 Provides a class representing a time series.
 """
-import os as _os, h5py
+import os as _os
+import h5py
 from pycbc.types.array import Array, _convert, complex_same_precision_as, zeros
 from pycbc.types.array import _nocomplex
 from pycbc.types.frequencyseries import FrequencySeries
@@ -188,10 +189,10 @@ class TimeSeries(Array):
         start_idx = float(start - self.start_time) * self.sample_rate
         end_idx = float(end - self.start_time) * self.sample_rate
 
-        if _numpy.isclose(start_idx, round(start_idx)):
+        if _numpy.isclose(start_idx, round(start_idx), rtol=0, atol=1E-3):
             start_idx = round(start_idx)
 
-        if _numpy.isclose(end_idx, round(end_idx)):
+        if _numpy.isclose(end_idx, round(end_idx), rtol=0, atol=1E-3):
             end_idx = round(end_idx)
 
         if mode == 'floor':
@@ -242,10 +243,13 @@ class TimeSeries(Array):
 
     def at_time(self, time, nearest_sample=False,
                 interpolate=None, extrapolate=None):
-        """ Return the value at the specified gps time
+        """Return the value of the TimeSeries at the specified GPS time.
 
         Parameters
         ----------
+        time: scalar or array-like
+            GPS time at which the value is wanted. Note that LIGOTimeGPS
+            objects count as scalar.
         nearest_sample: bool
             Return the sample at the time nearest to the chosen time rather
             than rounded down.
@@ -253,7 +257,7 @@ class TimeSeries(Array):
             Return the interpolated value of the time series. Choices
             are simple linear or quadratic interpolation.
         extrapolate: str or float, None
-            Value to return if time is outsidde the range of the vector or
+            Value to return if time is outside the range of the vector or
             method of extrapolating the value.
         """
         if nearest_sample:
@@ -277,9 +281,9 @@ class TimeSeries(Array):
                 keep_idx = _numpy.where(left & right)[0]
                 vtime = vtime[keep_idx]
             else:
-                raise ValueError("Unsuported extrapolate: %s" % extrapolate)
+                raise ValueError(f"Unsupported extrapolate: {extrapolate}")
 
-        fi = (vtime - float(self.start_time))*self.sample_rate
+        fi = (vtime - float(self.start_time)) * self.sample_rate
         i = _numpy.asarray(_numpy.floor(fi)).astype(int)
         di = fi - i
 
@@ -304,10 +308,9 @@ class TimeSeries(Array):
             ans[keep_idx] = old
             ans = _numpy.array(ans, ndmin=1)
 
-        if _numpy.isscalar(time):
+        if _numpy.ndim(time) == 0:
             return ans[0]
-        else:
-            return ans
+        return ans
 
     at_times = at_time
 
@@ -595,15 +598,31 @@ class TimeSeries(Array):
             # Uses the hole-filling method of
             # https://arxiv.org/pdf/1908.05644.pdf
             from pycbc.strain.gate import gate_and_paint
+            from pycbc.waveform.utils import apply_fd_time_shift
             if invpsd is None:
                 # These are some bare minimum settings, normally you
                 # should probably provide a psd
                 invpsd = 1. / self.filter_psd(self.duration/32, self.delta_f, 0)
             lindex = int((time - window - self.start_time) / self.delta_t)
-            rindex = lindex + int(2 * window / self.delta_t)
+            rindex = int((time + window - self.start_time) / self.delta_t)
             lindex = lindex if lindex >= 0 else 0
             rindex = rindex if rindex <= len(self) else len(self)
-            return gate_and_paint(data, lindex, rindex, invpsd, copy=False)
+            rindex_time = float(self.start_time + rindex * self.delta_t)
+            offset = rindex_time - (time + window)
+            if offset == 0:
+                return gate_and_paint(data, lindex, rindex, invpsd, copy=False)
+            else:
+                # time shift such that gate end time lands on a specific data sample
+                fdata = data.to_frequencyseries()
+                fdata = apply_fd_time_shift(fdata, offset + fdata.epoch, copy=False)
+                # gate and paint in time domain
+                data = fdata.to_timeseries()
+                data = gate_and_paint(data, lindex, rindex, invpsd, copy=False)
+                # shift back to the original time
+                fdata = data.to_frequencyseries()
+                fdata = apply_fd_time_shift(fdata, -offset + fdata.epoch, copy=False)
+                tdata = fdata.to_timeseries()
+                return tdata
         elif method == 'hard':
             tslice = data.time_slice(time - window, time + window)
             tslice[:] = 0
@@ -729,7 +748,7 @@ class TimeSeries(Array):
             The two dimensional interpolated qtransform of this time series.
         """
         from pycbc.filter.qtransform import qtiling, qplane
-        from scipy.interpolate import interp2d
+        from scipy.interpolate import RectBivariateSpline as interp2d
 
         if frange is None:
             frange = (30, int(self.sample_rate / 2 * 8))
@@ -743,10 +762,11 @@ class TimeSeries(Array):
         # Interpolate if requested
         if delta_f or delta_t or logfsteps:
             if return_complex:
-                interp_amp = interp2d(times, freqs, abs(q_plane))
-                interp_phase = interp2d(times, freqs, _numpy.angle(q_plane))
+                interp_amp = interp2d(freqs, times, abs(q_plane), kx=1, ky=1)
+                interp_phase = interp2d(freqs, times, _numpy.angle(q_plane),
+                                        kx=1, ky=1)
             else:
-                interp = interp2d(times, freqs, q_plane)
+                interp = interp2d(freqs, times, q_plane, kx=1, ky=1)
 
         if delta_t:
             times = _numpy.arange(float(self.start_time),
@@ -760,10 +780,10 @@ class TimeSeries(Array):
 
         if delta_f or delta_t or logfsteps:
             if return_complex:
-                q_plane = _numpy.exp(1.0j * interp_phase(times, freqs))
-                q_plane *= interp_amp(times, freqs)
+                q_plane = _numpy.exp(1.0j * interp_phase(freqs, times))
+                q_plane *= interp_amp(freqs, times)
             else:
-                q_plane = interp(times, freqs)
+                q_plane = interp(freqs, times)
 
         return times, freqs, q_plane
 
