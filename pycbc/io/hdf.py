@@ -10,25 +10,62 @@ import pickle
 
 from itertools import chain
 from io import BytesIO
-from lal import LIGOTimeGPS, YRJUL_SI
+from lal import LIGOTimeGPS
 
 from ligo.lw import ligolw
 from ligo.lw import lsctables
 from ligo.lw import utils as ligolw_utils
-from ligo.lw.utils import process as ligolw_process
 
-from pycbc import version as pycbc_version
-from pycbc.io.ligolw import return_search_summary, return_empty_sngl
+from pycbc.io.ligolw import (
+    return_search_summary,
+    return_empty_sngl,
+    create_process_table
+)
 from pycbc import events, conversions, pnutils
 from pycbc.events import ranking, veto
 from pycbc.events import mean_if_greater_than_zero
-from pycbc.pnutils import mass1_mass2_to_mchirp_eta
+
+logger = logging.getLogger('pycbc.io.hdf')
 
 
-class HFile(h5py.File):
+class HGroup(h5py.Group):
+    """ Low level extensions to the h5py group object
+    """
+    def create_group(self, name, track_order=None):
+        """
+        Wrapper around h5py's create_group in order to redirect to the
+        manual HGroup object defined here
+        """
+        if track_order is None:
+            track_order = h5py.h5.get_config().track_order
+
+        with h5py._objects.phil:
+            name, lcpl = self._e(name, lcpl=True)
+            gcpl = HGroup._gcpl_crt_order if track_order else None
+            gid = h5py.h5g.create(self.id, name, lcpl=lcpl, gcpl=gcpl)
+            return HGroup(gid)
+
+    def create_dataset(self, name, shape=None, dtype=None, data=None, **kwds):
+        """
+        Wrapper around h5py's create_dataset so that checksums are used
+        """
+        if hasattr(data, 'dtype') and not data.dtype == object:
+            kwds['fletcher32'] = True
+        return h5py.Group.create_dataset(
+            self,
+            name,
+            shape=shape,
+            dtype=dtype,
+            data=data,
+            **kwds
+        )
+
+
+class HFile(HGroup, h5py.File):
     """ Low level extensions to the capabilities of reading an hdf5 File
     """
-    def select(self, fcn, *args, **kwds):
+    def select(self, fcn, *args, chunksize=10**6, derived=None, group='',
+               return_data=True, premask=None):
         """ Return arrays from an hdf5 file that satisfy the given function
 
         Parameters
@@ -41,66 +78,139 @@ class HFile(h5py.File):
             A variable number of strings that are keys into the hdf5. These must
             refer to arrays of equal length.
 
-        chunksize : {1e6, int}, optional
+        chunksize : {10**6, int}, optional
             Number of elements to read and process at a time.
 
-        return_indices : bool, optional
-            If True, also return the indices of elements passing the function.
+        derived : dictionary
+            Dictionary keyed on argument name (must be given in args), values
+            are a tuple of: the function to be computed, and the required
+            datasets. The function must take in a dictionary keyed on those
+            dataset names.
+
+        group : string, optional
+            The group within the h5py file containing the datasets, e.g. in
+            standard offline merged trigger files, this would be the IFO. This
+            can be included in the args manually, but is required in the case
+            of derived functions, e.g. newsnr.
+
+        return_data : bool, optional, default True
+            If True, return the data for elements passing the function.
+
+        premask : array of boolean values, optional
+            The pre-mask to apply to the triggers at read-in.
 
         Returns
         -------
-        values : np.ndarrays
-            A variable number of arrays depending on the number of keys into
-            the hdf5 file that are given. If return_indices is True, the first
-            element is an array of indices of elements passing the function.
+        indices: np.ndarray
+            An array of indices of elements passing the function.
+
+        return_tuple : tuple of np.ndarrays
+            A variable number of arrays depending on the number of
+            args provided,
+            If return_data is True, arrays are the values of each
+            arg.
+            If return_data is False, this is None.
 
         >>> f = HFile(filename)
         >>> snr = f.select(lambda snr: snr > 6, 'H1/snr')
         """
 
-        # get references to each array
+        # Required datasets are the arguments requested and datasets given
+        # for any derived functions
+        derived = derived if derived is not None else {}
+        dsets = [a for a in list(args) if a not in derived]
+        for _, rqd_list in derived.values():
+            dsets += rqd_list
+
+        # remove any duplicates from req_dsets
+        dsets = list(set(dsets))
+
+        # Get the pointers to the h5py Datasets,
+        # check they can all be used together
         refs = {}
+        size = None
+        for ds in dsets:
+            refs[ds] = self[group + '/' + ds]
+            if (size is not None) and (refs[ds].size != size):
+                raise RuntimeError(f"Dataset {ds} is {self[ds].size} "
+                                   "entries long, which does not match "
+                                   f"previous input datasets ({size}).")
+            size = refs[ds].size
+
+        # Apply any pre-masks
+        if premask is None:
+            mask = np.ones(size, dtype=bool)
+        else:
+            mask = premask
+
+        if not mask.dtype == bool:
+            # mask is an array of indices rather than booleans,
+            # make it a bool array
+            new_mask = np.zeros(size, dtype=bool)
+            new_mask[mask] = True
+            mask = new_mask
+
+        if not mask.size == size:
+            # You get here if you are using a boolean premask which
+            # isn't the same size as the arrays
+            raise RuntimeError(f"Using premask of size {mask.size} which "
+                               f"does not match the input datasets ({size}).")
+
+        # datasets being returned (possibly)
         data = {}
+        indices = np.array([], dtype=np.uint64)
         for arg in args:
-            refs[arg] = self[arg]
             data[arg] = []
 
-        return_indices = kwds.get('return_indices', False)
-        indices = np.array([], dtype=np.uint64)
-
-        # To conserve memory read the array in chunks
-        chunksize = kwds.get('chunksize', int(1e6))
-        size = len(refs[arg])
-
+        # Loop through the chunks:
         i = 0
         while i < size:
             r = i + chunksize if i + chunksize < size else size
 
-            # Read each chunk's worth of data and find where it passes the function
-            partial = [refs[arg][i:r] for arg in args]
-            keep = fcn(*partial)
-            if return_indices:
-                indices = np.concatenate([indices, np.flatnonzero(keep) + i])
+            if not any(mask[i:r]):
+                # Nothing allowed through the mask in this chunk
+                i += chunksize
+                continue
 
-            # Store only the results that pass the function
-            for arg, part in zip(args, partial):
-                data[arg].append(part[keep])
+            if all(mask[i:r]):
+                # Everything allowed through the mask in this chunk
+                submask = np.arange(r - i)
+            else:
+                submask = np.flatnonzero(mask[i:r])
+
+            # Read each chunk's worth of data
+            partial_data = {arg: refs[arg][i:r][mask[i:r]]
+                            for arg in dsets}
+            partial = []
+            for a in args:
+                if a in derived.keys():
+                    # If this is a derived dataset, calculate it
+                    derived_fcn = derived[a][0]
+                    partial += [derived_fcn(partial_data)]
+                else:
+                    # otherwise, just read from the file
+                    partial += [partial_data[a]]
+
+            # Find where it passes the function
+            keep = fcn(*partial)
+
+            # Keep the indices which pass the function:
+            indices = np.concatenate([indices, submask[keep] + i])
+
+            if return_data:
+                # Store the dataset results that pass the function
+                for arg, part in zip(args, partial):
+                    data[arg].append(part[keep])
 
             i += chunksize
 
-        # Combine the partial results into full arrays
-        if len(args) == 1:
-            res = np.concatenate(data[args[0]])
-            if return_indices:
-                return indices.astype(np.uint64), res
-            else:
-                return res
+        if return_data:
+            return_tuple = tuple(np.concatenate(data[arg])
+                                 for arg in args)
         else:
-            res = tuple(np.concatenate(data[arg]) for arg in args)
-            if return_indices:
-                return (indices.astype(np.uint64),) + res
-            else:
-                return res
+            return_tuple = None
+
+        return indices.astype(np.uint64), return_tuple
 
 
 class DictArray(object):
@@ -163,8 +273,8 @@ class DictArray(object):
 
     def __add__(self, other):
         if self.data == {}:
-            logging.debug('Adding data to a DictArray instance which'
-                          ' was initialized with an empty dict')
+            logger.debug('Adding data to a DictArray instance which '
+                         'was initialized with an empty dict')
             return self._return(data=other)
 
         data = {}
@@ -172,7 +282,7 @@ class DictArray(object):
             try:
                 data[k] = np.concatenate([self.data[k], other.data[k]])
             except KeyError:
-                logging.info('%s does not exist in other data' % k)
+                logger.info('%s does not exist in other data', k)
         return self._return(data=data)
 
     def select(self, idx):
@@ -384,7 +494,7 @@ class DataFromFiles(object):
             Values from the dataset, filtered if requested and
             concatenated in order of file list
         """
-        logging.info('getting %s' % col)
+        logger.info('getting %s', col)
         vals = []
         for f in self.files:
             d = FileData(f, group=self.group, columnlist=self.columns,
@@ -393,7 +503,7 @@ class DataFromFiles(object):
             # Close each file since h5py has an upper limit on the number of
             # open file objects (approx. 1000)
             d.close()
-        logging.info('- got %i values' % sum(len(v) for v in vals))
+        logger.info('- got %i values', sum(len(v) for v in vals))
         return np.concatenate(vals)
 
 
@@ -401,48 +511,93 @@ class SingleDetTriggers(object):
     """
     Provides easy access to the parameters of single-detector CBC triggers.
     """
-    # FIXME: Some of these are optional and should be kwargs.
-    def __init__(self, trig_file, bank_file, veto_file,
-                 segment_name, filter_func, detector, premask=None):
-        logging.info('Loading triggers')
+    def __init__(self, trig_file, detector, bank_file=None, veto_file=None,
+                 segment_name=None, premask=None, filter_rank=None,
+                 filter_threshold=None, chunksize=10**6, filter_func=None):
+        """
+        Create a SingleDetTriggers instance
+
+        Parameters
+        ----------
+        trig_file : string or os.pathtype, required
+            HDF file containing trigger information
+
+        detector : string, required
+            The detectior being used, this is used to access the
+            triggers in trig_file
+
+        bank_file: string or os.pathtype, optional
+            hdf file containing template bank information
+
+        veto_file: string or os.pathtype, optional
+            File used to define vetoes
+
+        segment_name : string, optional
+            Segment name being used in the veto_file
+
+        premask : array of indices or boolean, optional
+           Array of used triggers
+
+        filter_rank : string, optional
+            The ranking, as defined by ranking.py to compare to
+            filter_threshold
+
+        filter_threshold: float, required if filter_rank is used
+            Threshold to filter the ranking values
+
+        chunksize : int , default 10**6
+            Size of chunks to read in for the filter_rank / threshold.
+        """
+        logger.info('Loading triggers')
         self.trigs_f = HFile(trig_file, 'r')
         self.trigs = self.trigs_f[detector]
+        self.ntriggers = self.trigs['end_time'].size
         self.ifo = detector  # convenience attributes
         self.detector = detector
         if bank_file:
-            logging.info('Loading bank')
+            logger.info('Loading bank')
             self.bank = HFile(bank_file, 'r')
         else:
-            logging.info('No bank file given')
             # empty dict in place of non-existent hdf file
             self.bank = {}
 
-        if premask is not None:
-            self.mask = premask
+        # Apply some masks to start off with - here we should try and apply
+        # them in the order which cuts most things earliest.
+
+        # Apply any pre-masks
+        if premask is None:
+            self.mask = np.ones(self.ntriggers, dtype=bool)
         else:
-            self.mask = np.ones(len(self.trigs['end_time']), dtype=bool)
+            self.mask = None
+            self.apply_mask(premask)
 
-        if veto_file:
-            logging.info('Applying veto segments')
-            # veto_mask is an array of indices into the trigger arrays
-            # giving the surviving triggers
-            logging.info('%i triggers before vetoes', self.mask.sum())
-            self.veto_mask, _ = events.veto.indices_outside_segments(
-                self.end_time, [veto_file],
-                ifo=detector, segment_name=segment_name)
+        if filter_rank:
+            assert filter_threshold is not None
+            logger.info("Applying threshold of %.3f on %s",
+                        filter_threshold, filter_rank)
+            fcn_dsets = (ranking.sngls_ranking_function_dict[filter_rank],
+                         ranking.required_datasets[filter_rank])
+            idx, _ = self.trigs_f.select(
+                 lambda rank: rank > filter_threshold,
+                 filter_rank,
+                 derived={filter_rank: fcn_dsets},
+                 return_data=False,
+                 premask=self.mask,
+                 group=detector,
+                 chunksize=chunksize,
+            )
+            logger.info("%d triggers remain", idx.size)
+            # If self.mask already has values, need to take these into account:
+            self.and_masks(idx)
 
-            idx = np.flatnonzero(self.mask)[self.veto_mask]
-            self.mask[:] = False
-            self.mask[idx] = True
-            logging.info('%i triggers remain after vetoes',
-                          len(self.veto_mask))
-
-        # FIXME this should use the hfile select interface to avoid
-        # memory and processing limitations.
         if filter_func:
-            # get required columns into the namespace with dummy attribute
-            # names to avoid confusion with other class properties
-            logging.info('Setting up filter function')
+            # Apply a filter on the triggers which is _not_ a ranking statistic
+            for rank_str in ranking.sngls_ranking_function_dict.keys():
+                if f'self.{rank_str}' in filter_func:
+                    logger.warning('Supplying the ranking (%s) in '
+                                   'filter_func is inefficient, suggest to '
+                                   'use filter_rank instead.', rank_str)
+            logger.info('Setting up filter function')
             for c in self.trigs.keys():
                 if c in filter_func:
                     setattr(self, '_'+c, self.trigs[c][:])
@@ -450,16 +605,30 @@ class SingleDetTriggers(object):
                 if c in filter_func:
                     # get template parameters corresponding to triggers
                     setattr(self, '_'+c,
-                          np.array(self.bank[c])[self.trigs['template_id'][:]])
+                        np.array(self.bank[c])[self.trigs['template_id'][:]])
 
-            self.filter_mask = eval(filter_func.replace('self.', 'self._'))
+            filter_mask = eval(filter_func.replace('self.', 'self._'))
             # remove the dummy attributes
             for c in chain(self.trigs.keys(), self.bank.keys()):
                 if c in filter_func: delattr(self, '_'+c)
 
-            self.mask = self.mask & self.filter_mask
-            logging.info('%i triggers remain after cut on %s',
-                         sum(self.mask), filter_func)
+            self.apply_mask(filter_mask)
+            logger.info('%i triggers remain after cut on %s',
+                        sum(self.mask), filter_func)
+
+        if veto_file:
+            logger.info('Applying veto segments')
+            # veto_mask is an array of indices into the trigger arrays
+            # giving the surviving triggers
+            logger.info('%i triggers before vetoes', self.mask_size)
+            veto_mask, _ = events.veto.indices_outside_segments(
+                self.end_time, [veto_file],
+                ifo=detector, segment_name=segment_name)
+
+            # Update mask accordingly
+            self.apply_mask(veto_mask)
+            logger.info('%i triggers remain after vetoes',
+                        self.mask_size)
 
     def __getitem__(self, key):
         # Is key in the TRIGGER_MERGE file?
@@ -482,7 +651,7 @@ class SingleDetTriggers(object):
                                                                        % param)
 
     def trig_dict(self):
-        """Returns dict of the masked trigger valuse """
+        """Returns dict of the masked trigger values"""
         mtrigs = {}
         for k in self.trigs:
             if len(self.trigs[k]) == len(self.trigs['end_time']):
@@ -490,6 +659,7 @@ class SingleDetTriggers(object):
                     mtrigs[k] = self.trigs[k][self.mask]
                 else:
                     mtrigs[k] = self.trigs[k][:]
+        mtrigs['ifo'] = self.ifo
         return mtrigs
 
     @classmethod
@@ -499,53 +669,129 @@ class SingleDetTriggers(object):
             if type(m[1]) == property]
 
     def apply_mask(self, logic_mask):
-        """Apply a boolean array to the set of triggers"""
-        if hasattr(self.mask, 'dtype') and (self.mask.dtype == 'bool'):
-            orig_indices = self.mask.nonzero()[0][logic_mask]
-            self.mask[:] = False
-            self.mask[orig_indices] = True
+        """Apply a mask over the top of the current mask
+
+        Parameters
+        ----------
+        logic_mask : boolean array or numpy array of indices
+        """
+        if self.mask is None:
+            self.mask = np.zeros(self.ntriggers, dtype=bool)
+            self.mask[logic_mask] = True
+        elif hasattr(self.mask, 'dtype') and (self.mask.dtype == 'bool'):
+            if hasattr(logic_mask, 'dtype') and (logic_mask.dtype == 'bool'):
+                # So both new and old masks are boolean, numpy slice assignment
+                # can be used directly, with no additional memory.
+                self.mask[self.mask] = logic_mask
+            else:
+                # So logic_mask is either an array, or list, of integers.
+                # This case is a little tricksy, so we begin by converting the
+                # list/array to a boolean, and then do what we did above.
+                new_logic_mask = np.zeros(np.sum(self.mask), dtype=bool)
+                new_logic_mask[logic_mask] = True
+                self.mask[self.mask] = new_logic_mask
         else:
             self.mask = list(np.array(self.mask)[logic_mask])
 
-    def mask_to_n_loudest_clustered_events(self, rank_method,
-                                           n_loudest=10,
-                                           cluster_window=10):
-        """Edits the mask property of the class to point to the N loudest
-        single detector events as ranked by ranking statistic. Events are
-        clustered so that no more than 1 event within +/- cluster-window will
-        be considered."""
+    def and_masks(self, logic_mask):
+        """Apply a mask to be combined as a logical and with the current mask.
 
-        # If this becomes memory intensive we can optimize
-        stat = rank_method.rank_stat_single((self.ifo, self.trig_dict()))
+        Parameters
+        ----------
+        logic_mask : boolean array or numpy array/list of indices
+        """
+        if self.mask_size == self.ntriggers:
+            # No mask exists, just update to use the given mask
+            self.apply_mask(logic_mask)
+            return
+
+        # Use intersection of the indices of True values in the masks
+        if hasattr(logic_mask, 'dtype') and (logic_mask.dtype == 'bool'):
+            new_indices = np.flatnonzero(logic_mask)
+        else:
+            new_indices = np.array(logic_mask)
+
+        if hasattr(self.mask, 'dtype') and (self.mask.dtype == 'bool'):
+            orig_indices = np.flatnonzero(self.mask)
+        else:
+            orig_indices = np.array(self.mask)
+
+        self.mask[:] = False
+        and_indices = np.intersect1d(new_indices, orig_indices)
+        self.mask[and_indices.astype(np.uint64)] = True
+
+    def mask_to_n_loudest_clustered_events(self, rank_method,
+                                           statistic_threshold=None,
+                                           n_loudest=10,
+                                           cluster_window=10,
+                                           statistic_kwargs=None):
+        """Edits the mask property of the class to point to the N loudest
+        single detector events as ranked by ranking statistic.
+
+        Events are clustered so that no more than 1 event within +/-
+        cluster_window will be considered. Can apply a threshold on the
+        statistic using statistic_threshold
+        """
+
+        if statistic_kwargs is None:
+            statistic_kwargs = {}
+        sds = rank_method.single(self.trig_dict())
+        stat = rank_method.rank_stat_single(
+            (self.ifo, sds),
+            **statistic_kwargs
+        )
         if len(stat) == 0:
-            # No triggers, so just return here
-            self.stat = np.array([])
+            # No triggers at all, so just return here
+            self.apply_mask(np.array([], dtype=np.uint64))
+            self.stat = np.array([], dtype=np.uint64)
             return
 
         times = self.end_time
+        if statistic_threshold is not None:
+            # Threshold on statistic
+            keep = stat >= statistic_threshold
+            stat = stat[keep]
+            times = times[keep]
+            self.apply_mask(keep)
+
+            if len(stat) == 0:
+                logger.warning("No triggers after thresholding")
+                return
+            else:
+                logger.info("%d triggers after thresholding", len(stat))
+
         index = stat.argsort()[::-1]
         new_times = []
         new_index = []
+        # Loop through triggers - loudest first
         for curr_idx in index:
             curr_time = times[curr_idx]
             for time in new_times:
+                # Have we already got a louder trigger within the window?
                 if abs(curr_time - time) < cluster_window:
                     break
             else:
-                # Only get here if no other triggers within cluster window
+                # Store if no other triggers within cluster window
                 new_index.append(curr_idx)
                 new_times.append(curr_time)
             if len(new_index) >= n_loudest:
+                # We have as many triggers as we want now
                 break
 
+        # For indexing, indices need to be a numpy array, in order
         index = np.array(new_index)
         index.sort()
+        # Apply to the existing mask
+        self.apply_mask(index)
         self.stat = stat[index]
-        if hasattr(self.mask, 'dtype') and self.mask.dtype == 'bool':
-            orig_indices = np.flatnonzero(self.mask)[index]
-            self.mask = list(orig_indices)
-        elif isinstance(self.mask, list):
-            self.mask = list(np.array(self.mask)[index])
+
+    @property
+    def mask_size(self):
+        if self.mask is None:
+            return self.ntriggers
+        if isinstance(self.mask, list):
+            return len(self.mask)
+        return np.count_nonzero(self.mask)
 
     @property
     def template_id(self):
@@ -688,14 +934,17 @@ class SingleDetTriggers(object):
         return ranking.get_sngls_ranking_from_trigs(self, rank_name, **kwargs)
 
     def get_column(self, cname):
+        """
+        Read columns while applying the mask
+        """
         # Fiducial value that seems to work, not extensively tuned.
         MFRAC = 0.3
 
         # If the mask accesses few enough elements then directly use it
         # This can be slower than reading in all the elements if most of them
         # will be read.
-        if self.mask is not None and (isinstance(self.mask, list) or \
-                (len(self.mask.nonzero()[0]) < (len(self.mask) * MFRAC))):
+        if isinstance(self.mask, list) or \
+                self.mask_size < (self.ntriggers * MFRAC):
             return self.trigs[cname][self.mask]
 
         # We have a lot of elements to read so we resort to readin the entire
@@ -731,8 +980,8 @@ class ForegroundTriggers(object):
             raise RuntimeError("IFOs in statmap file not all represented "
                                "by single-detector trigger files.")
         if not sorted(self.sngl_files.keys()) == sorted(self.ifos):
-            logging.warning("WARNING: Single-detector trigger files "
-                            "given for IFOs not in the statmap file")
+            logger.warning("WARNING: Single-detector trigger files "
+                           "given for IFOs not in the statmap file")
 
         self.bank_file = HFile(bank_file, "r")
         self.n_loudest = n_loudest
@@ -750,8 +999,8 @@ class ForegroundTriggers(object):
                 try:
                     ifar = self.coinc_file.get_column('ifar')
                 except KeyError:
-                    logging.warning("WARNING: Can't find inclusive IFAR!"
-                                    "Using exclusive IFAR instead ...")
+                    logger.warning("WARNING: Can't find inclusive IFAR!"
+                                   "Using exclusive IFAR instead ...")
                     ifar = self.coinc_file.get_column('ifar_exc')
                     self._inclusive = False
             else:
@@ -794,21 +1043,29 @@ class ForegroundTriggers(object):
         return_dict = {}
         for ifo in self.ifos:
             try:
-                tid = self.trig_id[ifo]
-                lgc = tid == -1
+                # Make sure we don't change the internal cached trig_id array
+                tid = np.copy(self.trig_id[ifo])
                 # Put in *some* value for the invalid points to avoid failure
-                # Make sure this doesn't change the cached internal array!
-                tid = np.copy(tid)
+                lgc = tid == -1
                 tid[lgc] = 0
-                # If small number of points don't read the full file
-                if len(tid) < 1000:
-                    curr = []
-                    hdf_dataset = self.sngl_files[ifo].group[variable]
-                    for idx in tid:
-                        curr.append(hdf_dataset[idx])
-                    curr = np.array(curr)
-                else:
-                    curr = self.sngl_files[ifo].get_column(variable)[tid]
+                # Get the appropriate variable dataset
+                group = self.sngl_files[ifo].group
+                if not len(group.keys()):
+                    # There are no groups to consider - move on to next IFO
+                    continue
+                dataset = group[variable]
+                # Convert the trigger ids into a boolean aray so that we can
+                # read only the triggers we want directly from the file
+                mask = np.zeros(dataset.size, dtype=bool)
+                mask[tid] = True
+                needed_data = dataset[mask]
+                # Get order and duplicate information back that was lost in
+                # the boolean mask assignment
+                _, order_duplicate_index = np.unique(
+                    tid,
+                    return_inverse=True
+                )
+                curr = needed_data[order_duplicate_index]
             except IndexError:
                 if len(self.trig_id[ifo]) == 0:
                     curr = np.array([])
@@ -857,11 +1114,13 @@ class ForegroundTriggers(object):
         outdoc = ligolw.Document()
         outdoc.appendChild(ligolw.LIGO_LW())
 
-        ifos = list(self.sngl_files.keys())
-        proc_id = ligolw_process.register_to_xmldoc(outdoc, 'pycbc',
-                     {}, instruments=ifos, comment='', version=pycbc_version.git_hash,
-                     cvs_repository='pycbc/'+pycbc_version.git_branch,
-                     cvs_entry_time=pycbc_version.date).process_id
+        ifos = sorted(self.sngl_files)
+        proc_table = create_process_table(
+            outdoc,
+            program_name='pycbc',
+            detectors=ifos
+        )
+        proc_id = proc_table.process_id
 
         search_summ_table = lsctables.New(lsctables.SearchSummaryTable)
         coinc_h5file = self.coinc_file.h5file
@@ -959,6 +1218,10 @@ class ForegroundTriggers(object):
                     val = sngl_col_vals[name][ifo][0][idx]
                     if name == 'end_time':
                         sngl.end = LIGOTimeGPS(val)
+                    elif name == 'chisq':
+                        # Use reduced chisquared to be consistent with Live
+                        dof = 2. * sngl_col_vals['chisq_dof'][ifo][0][idx] - 2.
+                        sngl.chisq = val / dof
                     else:
                         setattr(sngl, name, val)
                 for name in bank_col_names:
@@ -1007,7 +1270,7 @@ class ForegroundTriggers(object):
             coinc_inspiral_row.combined_far = 1./coinc_event_vals['ifar'][idx]
             # Transform to Hz
             coinc_inspiral_row.combined_far = \
-                                    coinc_inspiral_row.combined_far / YRJUL_SI
+                conversions.sec_to_year(coinc_inspiral_row.combined_far)
             coinc_event_row.likelihood = coinc_event_vals['stat'][idx]
             coinc_inspiral_row.minimum_duration = 0.
             coinc_event_table.append(coinc_event_row)
@@ -1023,10 +1286,10 @@ class ForegroundTriggers(object):
         ligolw_utils.write_filename(outdoc, file_name)
 
     def to_coinc_hdf_object(self, file_name):
-        ofd = h5py.File(file_name,'w')
+        ofd = HFile(file_name,'w')
 
         # Some fields are special cases
-        logging.info("Outputting search results")
+        logger.info("Outputting search results")
         time = self.get_end_time()
         # time will be used later to determine active ifos
         ofd['time'] = time
@@ -1042,17 +1305,17 @@ class ForegroundTriggers(object):
         for field in ['stat']:
             ofd[field] = self.get_coincfile_array(field)
 
-        logging.info("Outputting template information")
+        logger.info("Outputting template information")
         # Bank fields
         for field in ['mass1','mass2','spin1z','spin2z']:
             ofd[field] = self.get_bankfile_array(field)
 
         mass1 = self.get_bankfile_array('mass1')
         mass2 = self.get_bankfile_array('mass2')
-        ofd['chirp_mass'], _ = mass1_mass2_to_mchirp_eta(mass1, mass2)
+        ofd['chirp_mass'], _ = pnutils.mass1_mass2_to_mchirp_eta(mass1, mass2)
 
-        logging.info("Outputting single-trigger information")
-        logging.info("reduced chisquared")
+        logger.info("Outputting single-trigger information")
+        logger.info("reduced chisquared")
         chisq_vals_valid = self.get_snglfile_array_dict('chisq')
         chisq_dof_vals_valid = self.get_snglfile_array_dict('chisq_dof')
         for ifo in self.ifos:
@@ -1066,12 +1329,12 @@ class ForegroundTriggers(object):
         # Single-detector fields
         for field in ['sg_chisq', 'end_time', 'sigmasq',
                       'psd_var_val']:
-            logging.info(field)
+            logger.info(field)
             try:
                 vals_valid = self.get_snglfile_array_dict(field)
             except KeyError:
-                logging.info(field + " is not present in the "
-                             "single-detector files")
+                logger.info("%s is not present in the "
+                            "single-detector files", field)
 
             for ifo in self.ifos:
                 # Some of the values will not be valid for all IFOs,
@@ -1092,7 +1355,7 @@ class ForegroundTriggers(object):
             network_snr_sq[valid] += vals[valid] ** 2.0
         ofd['network_snr'] = np.sqrt(network_snr_sq)
 
-        logging.info("Triggered detectors")
+        logger.info("Triggered detectors")
         # Create a n_ifos by n_events matrix, with the ifo letter if the
         # event contains a trigger from the ifo, empty string if not
         triggered_matrix = [[ifo[0] if v else ''
@@ -1104,7 +1367,7 @@ class ForegroundTriggers(object):
         ofd.create_dataset('trig', data=triggered_detectors,
                            dtype='<S3')
 
-        logging.info("active detectors")
+        logger.info("active detectors")
         # Create a n_ifos by n_events matrix, with the ifo letter if the
         # ifo was active at the event time, empty string if not
         active_matrix = [[ifo[0] if t in self.active_segments[ifo]
@@ -1124,10 +1387,10 @@ class ReadByTemplate(object):
     def __init__(self, filename, bank=None, segment_name=None, veto_files=None,
                  gating_veto_windows={}):
         self.filename = filename
-        self.file = h5py.File(filename, 'r')
+        self.file = HFile(filename, 'r')
         self.ifo = tuple(self.file.keys())[0]
         self.valid = None
-        self.bank = h5py.File(bank, 'r') if bank else {}
+        self.bank = HFile(bank, 'r') if bank else {}
 
         # Determine the segments which define the boundaries of valid times
         # to use triggers
@@ -1203,7 +1466,7 @@ class ReadByTemplate(object):
         if self.valid:
             self.keep = veto.indices_within_times(times, self.valid[0],
                                                   self.valid[1])
-#            logging.info('applying vetoes')
+#            logger.info('applying vetoes')
         else:
             self.keep = np.arange(0, len(times))
 
@@ -1297,7 +1560,7 @@ def save_dict_to_hdf5(dic, filename):
     filename:
         desired name of hdf5 file
     """
-    with h5py.File(filename, 'w') as h5file:
+    with HFile(filename, 'w') as h5file:
         recursively_save_dict_contents_to_group(h5file, '/', dic)
 
 def recursively_save_dict_contents_to_group(h5file, path, dic):
