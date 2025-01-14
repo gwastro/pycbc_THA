@@ -159,11 +159,11 @@ def resolve_url(
         # OSDF will require a scitoken to be present and stashcp to be
         # available. Thanks Dunky for the code here!
         cmd = [
-            which("stashcp") or "stashcp",
-            u.path,
-            filename,
+             which("pelican") or "pelican", 
+             "object get", 
+             u.scheme + "://" + u.path, 
+             filename
         ]
-
         try:
             subprocess.run(cmd, check=True, capture_output=True)
         except subprocess.CalledProcessError as err:
