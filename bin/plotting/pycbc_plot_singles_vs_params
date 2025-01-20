@@ -149,7 +149,7 @@ hexbin_style = {
 # In earlier versions mpl will try to take the max over bins with 0 triggers
 # and fail, unless we tell it to leave these blank by setting mincnt
 if matplotlib.__version__ < '3.8.1':
-    hexbin_style['mincnt'] = 0
+    hexbin_style['mincnt'] = 1
 
 if opts.log_x:
     hexbin_style['xscale'] = 'log'
