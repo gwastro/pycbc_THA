@@ -15,7 +15,7 @@ RUN dnf -y install https://ecsft.cern.ch/dist/cvmfs/cvmfs-release/cvmfs-release-
 
 # set up environment
 RUN cd / && \
-    mkdir -p /cvmfs/config-osg.opensciencegrid.org /cvmfs/oasis.opensciencegrid.org /cvmfs/gwosc.osgstorage.org && echo "config-osg.opensciencegrid.org /cvmfs/config-osg.opensciencegrid.org cvmfs ro,noauto 0 0" >> /etc/fstab && echo "oasis.opensciencegrid.org /cvmfs/oasis.opensciencegrid.org cvmfs ro,noauto 0 0" >> /etc/fstab && echo "gwosc.osgstorage.org /cvmfs/gwosc.osgstorage.org cvmfs ro,noauto 0 0" >> /etc/fstab && mkdir -p /oasis /scratch /projects /usr/lib64/slurm /var/run/munge && \
+    mkdir -p /cvmfs/config-osg.opensciencegrid.org /cvmfs/software.igwn.org /cvmfs/gwosc.osgstorage.org && echo "config-osg.opensciencegrid.org /cvmfs/config-osg.opensciencegrid.org cvmfs ro,noauto 0 0" >> /etc/fstab && echo "software.igwn.org /cvmfs/software.igwn.org cvmfs ro,noauto 0 0" >> /etc/fstab && echo "gwosc.osgstorage.org /cvmfs/gwosc.osgstorage.org cvmfs ro,noauto 0 0" >> /etc/fstab && mkdir -p /oasis /scratch /projects /usr/lib64/slurm /var/run/munge && \
     groupadd -g 1000 pycbc && useradd -u 1000 -g 1000 -d /opt/pycbc -k /etc/skel -m -s /bin/bash pycbc
 
 # Install MPI software needed for pycbc_inference
@@ -31,13 +31,16 @@ RUN rm -f /etc/ld.so.cache && /sbin/ldconfig
 # Make python be what we want
 RUN alternatives --set python /usr/bin/python3.9
 
+### Why do I need to install this separately ??
+RUN /bin/sh -c pip install ciecplib
+
 # Explicitly set the path so that it is not inherited from build the environment
 ENV PATH "/usr/local/bin:/usr/bin:/bin:/lib64/openmpi/bin/bin"
 
 # Set the default LAL_DATA_PATH to point at CVMFS first, then the container.
 # Users wanting it to point elsewhere should start docker using:
 #   docker <cmd> -e LAL_DATA_PATH="/my/new/path"
-ENV LAL_DATA_PATH "/cvmfs/oasis.opensciencegrid.org/ligo/sw/pycbc/lalsuite-extra/current/share/lalsimulation:/opt/pycbc/pycbc-software/share/lal-data"
+ENV LAL_DATA_PATH "/cvmfs/software.igwn.org/pycbc/lalsuite-extra/current/share/lalsimulation:/opt/pycbc/pycbc-software/share/lal-data"
 
 # When the container is started with
 #   docker run -it pycbc/pycbc-el8:latest
@@ -45,3 +48,17 @@ ENV LAL_DATA_PATH "/cvmfs/oasis.opensciencegrid.org/ligo/sw/pycbc/lalsuite-extra
 # This can be overridden to log in as root with
 #   docker run -it pycbc/pycbc-el8:latest /bin/bash -l
 CMD ["/bin/su", "-l", "pycbc"]
+
+ADD requirements.txt /etc/requirements.txt
+
+ADD requirements-igwn.txt /etc/requirements-igwn.txt
+
+ADD companion.txt /etc/companion.txt
+
+# Quick fix for numpy version conflict
+RUN python3.9 -m pip install "numpy<2.0"
+
+# Replace the github repo accordingly
+RUN /bin/sh -c pip install -r /etc/requirements.txt && pip install -r /etc/requirements-igwn.txt && pip install -r /etc/companion.txt && pip install git+https://github.com/gwastro/pycbc_THA.git@tha_development_work
+
+ADD docker/etc/docker-install.sh /etc/docker-install.sh
