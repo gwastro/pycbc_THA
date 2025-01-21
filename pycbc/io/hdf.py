@@ -732,7 +732,6 @@ class SingleDetTriggers(object):
         cluster_window will be considered. Can apply a threshold on the
         statistic using statistic_threshold
         """
-
         if statistic_kwargs is None:
             statistic_kwargs = {}
         sds = rank_method.single(self.trig_dict())
